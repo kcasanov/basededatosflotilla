@@ -1,5 +1,5 @@
 [build]
-  command = "mkdir -p dist && cp index.html dist/index.html"
+  command = "mkdir -p dist && cp index.html app.js dist/"
   publish = "dist"
 
 [functions]
