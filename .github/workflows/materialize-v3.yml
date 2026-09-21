@@ -1,0 +1,29 @@
+name: Materialize V3 sources
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - '.github/workflows/materialize-v3.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  materialize:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Decode V3 sources
+        run: |
+          python -c "import base64,gzip,pathlib; pathlib.Path('app-v3.js').write_bytes(gzip.decompress(base64.b64decode(pathlib.Path('.v3/app-v3.js.gz.b64').read_text().strip()))); pathlib.Path('Code.gs').write_bytes(gzip.decompress(base64.b64decode(pathlib.Path('.v3/Code_v3.gs.gz.b64').read_text().strip())))"
+          node --check app-v3.js
+          cp Code.gs /tmp/Code.js
+          node --check /tmp/Code.js
+          rm .github/workflows/materialize-v3.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add app-v3.js Code.gs .github/workflows/materialize-v3.yml
+          git commit -m "Materialize V3 frontend and backend sources"
+          git push
