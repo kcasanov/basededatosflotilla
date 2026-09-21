@@ -232,15 +232,17 @@ function saveUberWeek_(body,device){
   const main=SpreadsheetApp.openById(SPREADSHEET_ID),legacy=SpreadsheetApp.openById(planSpreadsheetId_()),legacySh=legacy.getSheetByName(tab); if(!legacySh)return{ok:false,message:'No existe la pestaña '+tab+' en Plan de pagos.'};
   const gains=num_(body.gananciasTotales),returns=num_(body.devolucionesGastos),adjust=num_(body.ajustesAnteriores),cash=Math.abs(num_(body.efectivoChofer));
 
+  const uberId='uber_'+vehicleId+'_'+targetDate;
+  removeUberRun_(main,uberId);
+  reconcileVisibleLegacyBox_(main,vehicle,legacySh,targetDate,device);
+
   const legacyRows=legacyObligationsTo_(legacySh,targetDate),fallback=serverScheduleTo_(vehicle,targetDate);
   const obligations=legacyRows.length?legacyRows.map(r=>({planId:vehicleId+'|'+r.date,week:r.week,date:r.date,amount:r.amount||num_(vehicle.CuotaSemanal),legacyState:String(r.state||''),legacyRow:r.row})):fallback.map(r=>Object.assign({},r,{legacyState:''}));
   if(!obligations.length)return{ok:false,message:'No encontré cuotas programadas hasta esa fecha.'};
   const target=obligations.find(o=>o.date===targetDate)||obligations[obligations.length-1],week=target.week||weekNumberForDate_(vehicle,targetDate),quota=num_(target.amount||vehicle.CuotaSemanal);
-  const uberId='uber_'+vehicleId+'_'+targetDate;
-  removeUberRun_(main,uberId);
   const carryIn=previousCarry_(main,vehicleId,targetDate,legacySh,week);
   const reimbursements=returns+adjust+carryIn;
-  const rawAvailable=Math.max(0,gains+reimbursements-cash);
+  const rawAvailable=Math.max(0,gains+returns+adjust-cash);
   const saldoSemana=gains+reimbursements-cash-quota;
 
   // Cuadro público: solo B1:B5. B6 conserva siempre su fórmula.
@@ -274,22 +276,46 @@ function saveUberWeek_(body,device){
   return{ok:true,uberSemanaId:uberId,week:week,carryIn:carryIn,reimbursementsTotal:reimbursements,saldoSemana:isFinite(publicSaldo)?publicSaldo:saldoSemana,rawAvailable:rawAvailable,allocations:allocations,unapplied:available,targetReceived:targetReceived,targetPending:Math.max(0,quota-targetReceived),targetState:targetState};
 }
 function removeUberRun_(main,uberId){
-  const pay=main.getSheetByName('Pagos_Reales'),pv=pay.getDataRange().getValues(),ph=pv[0].map(String),uIdx=ph.indexOf('UberSemanaID');
-  if(uIdx>=0)for(let r=pv.length-1;r>=1;r--)if(String(pv[r][uIdx])===uberId)pay.deleteRow(r+1);
-  const ush=main.getSheetByName('Uber_Semanas'); if(!ush)return; const uv=ush.getDataRange().getValues();
-  for(let r=uv.length-1;r>=1;r--)if(String(uv[r][0])===uberId)ush.deleteRow(r+1);
+  const pay=main.getSheetByName('Pagos_Reales'),pv=pay.getDataRange().getValues(),ph=pv[0].map(String),uIdx=ph.indexOf('UberSemanaID'),affected=[];
+  if(uIdx>=0)for(let r=pv.length-1;r>=1;r--)if(String(pv[r][uIdx])===uberId){
+    affected.push({vehicleId:String(pv[r][2]||''),date:ymd_(pv[r][3]),expected:num_(pv[r][5])});
+    pay.deleteRow(r+1);
+  }
+  const ush=main.getSheetByName('Uber_Semanas');
+  if(ush){const uv=ush.getDataRange().getValues();for(let r=uv.length-1;r>=1;r--)if(String(uv[r][0])===uberId)ush.deleteRow(r+1);}
+  affected.forEach(a=>syncLegacyStatusForPayment_(a.vehicleId,a.date,a.expected));
+  return affected;
 }
+
+function reconcileVisibleLegacyBox_(main,vehicle,legacySh,targetDate,device){
+  try{
+    const boxWeek=num_(legacySh.getRange('B1').getValue()),boxQuota=num_(legacySh.getRange('B5').getValue())||num_(vehicle.CuotaSemanal),boxSaldo=num_(legacySh.getRange('B6').getValue());
+    if(!boxWeek)return;
+    const row=legacyObligationsTo_(legacySh,targetDate).find(r=>num_(r.week)===boxWeek);
+    if(!row||!row.date||row.date>=targetDate)return;
+    const expected=num_(row.amount||boxQuota),targetReceived=boxSaldo>=-0.01?expected:Math.max(0,Math.min(expected,expected+boxSaldo));
+    const current=sumReceived_(main,String(vehicle.VehicleID||''),row.date),diff=Math.max(0,targetReceived-current);
+    if(diff>0.01){
+      const now=new Date(),status=targetReceived>=expected-0.01?'PAGADO':'PARCIAL';
+      main.getSheetByName('Pagos_Reales').appendRow([Utilities.getUuid(),String(vehicle.VehicleID||'')+'|'+row.date,String(vehicle.VehicleID||''),row.date,Utilities.formatDate(now,TZ,'yyyy-MM-dd'),expected,diff,status,'Conciliación inicial desde saldo del cuadro público',now,now,'LEGACY_RECONCILE','']);
+      log_('PAGO',String(vehicle.VehicleID||'')+'|'+row.date,'LEGACY_RECONCILE',JSON.stringify({expected:expected,received:targetReceived,balance:boxSaldo}),device);
+    }
+    const effective=Math.max(current,targetReceived);
+    setLegacyStatus_(legacySh,row.date,effective>=expected-0.01?'Pagado':'Pendiente');
+  }catch(e){log_('SYNC',String(vehicle.VehicleID||''),'LEGACY_RECONCILE_ERROR',String(e),device);}
+}
+
 function previousCarry_(main,vehicleId,targetDate,legacySh,targetWeek){
+  try{
+    const rows=legacyObligationsTo_(legacySh,targetDate).filter(r=>r.date<targetDate&&String(r.state||'').toUpperCase()!=='PAGADO');
+    const debt=rows.reduce((sum,r)=>sum+Math.max(0,num_(r.amount)-sumReceived_(main,vehicleId,r.date)),0);
+    if(debt>0.01)return -debt;
+  }catch(e){}
   const sh=main.getSheetByName('Uber_Semanas');
   if(sh){
     const rows=sheetObjects_(sh).filter(r=>String(r.VehicleID)===vehicleId&&ymd_(r.FechaProgramada)<targetDate).sort((a,b)=>ymd_(b.FechaProgramada).localeCompare(ymd_(a.FechaProgramada)));
     if(rows.length)return Math.min(0,num_(rows[0].SaldoSemana));
   }
-  // Primera semana administrada desde V3: hereda un saldo negativo ya visible en el cuadro anterior.
-  try{
-    const boxWeek=num_(legacySh.getRange('B1').getValue()),boxSaldo=num_(legacySh.getRange('B6').getValue());
-    if(boxWeek&&num_(targetWeek)>boxWeek)return Math.min(0,boxSaldo);
-  }catch(e){}
   return 0;
 }
 function upsertUberWeek_(main,row){ main.getSheetByName('Uber_Semanas').appendRow(row); }

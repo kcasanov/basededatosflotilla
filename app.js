@@ -10,7 +10,8 @@ const IVA_RATE = 0.13;
 const WEEKLY_INSURANCE = 5000;
 const MORNING_INSURANCE = 10000;
 const INTEREST_FACTOR = 0.006;
-const BACKEND_URL = '/api';
+const APP_BASE = location.pathname.startsWith('/kcasanova/baseflotilla') ? '/kcasanova/baseflotilla' : '';
+const BACKEND_URL = APP_BASE + '/api';
 const SESSION_KEY = 'flotilla_session';
 const DEVICE_KEY = 'flotilla_device_id';
 

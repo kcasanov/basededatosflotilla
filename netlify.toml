@@ -1,5 +1,5 @@
 [build]
-  command = "python build_v3.py"
+  command = "mkdir -p dist && cp index.html app.js app-v3.js dist/"
   publish = "dist"
 
 [functions]

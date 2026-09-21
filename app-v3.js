@@ -62,6 +62,15 @@ loadProductionData = async function () {
     balance: Number(x.SaldoSemana || 0), rawAvailable: Number(x.MontoDisponibleBruto || 0), status: String(x.Estado || '')
   })) : [];
   planDashboardLoadedV3 = false;
+  try {
+    const pd = await backend('getPlanDashboard', { sessionToken });
+    if (pd && pd.ok) {
+      planDashboardV3 = Array.isArray(pd.cards) ? pd.cards : [];
+      planDashboardLoadedV3 = true;
+    }
+  } catch (e) {
+    planDashboardLoadedV3 = false;
+  }
 };
 
 function openPaymentRowsV3(vehicleId) {
@@ -91,6 +100,40 @@ function paymentStatusV3(row) {
   const pending = Math.max(0, Number(row.amount || 0) - Number(row.received || 0));
   return { pending, paid: pending <= .01, partial: Number(row.received || 0) > 0 && pending > .01 };
 }
+
+// Une atrasos históricos del Plan de pagos con los atrasos nacidos en esta app.
+const getLateRowsV22 = getLateRows;
+getLateRows = function () {
+  const base = getLateRowsV22();
+  const map = new Map(base.map(r => [r.key, r]));
+  const cutoff = weekDate();
+  planDashboardV3.forEach(card => {
+    const v = contractVehicles.find(x => x.id === card.vehicleId);
+    if (!v || !Array.isArray(card.legacyPending)) return;
+    card.legacyPending.forEach(p => {
+      const date = normalizeSheetDate(p.date);
+      if (!date || parseDate(date) >= cutoff) return;
+      const key = paymentKey(v.id, date), st = getPaymentState(v.id, date);
+      const amount = Number(p.quota || v.weekly || 0), missing = Math.max(0, amount - Number(st.received || 0));
+      if (missing <= .01) return;
+      const weeksLate = Math.max(1, Math.ceil((cutoff - parseDate(date)) / 604800000));
+      map.set(key, {
+        planId:key, vehicleId:v.id, vehicle:v.name, date, amount, iva:amount * IVA_RATE, insurance:WEEKLY_INSURANCE,
+        received:Number(st.received || 0), realDate:st.realDate || '', status:st.status || 'Pendiente', pagoId:st.pagoId || '',
+        missing, weeksLate, key, source:'legacy'
+      });
+    });
+  });
+  return [...map.values()].sort((a,b) => a.date.localeCompare(b.date));
+};
+
+// Finalizado/cancelado deja de generar obligaciones nuevas, pero conserva historial.
+allScheduledEventsBetween = function(start, end) {
+  return contractVehicles
+    .filter(v => !['FINALIZADO','CANCELADO'].includes(v.operationStatus || 'ACTIVO'))
+    .flatMap(v => scheduledEventsForVehicle(v, start, end))
+    .sort((a,b) => a.date.localeCompare(b.date));
+};
 
 const renderWeekV22 = renderWeek;
 renderWeek = function () {
@@ -218,7 +261,9 @@ function personalBodyV3(v, rows) {
 function uberBodyV3(v, dash, rows) {
   const summary = dash && Array.isArray(dash.summary) && dash.summary.length ? dash.summary : [['Semana #','—'],['Ganancias Totales','—'],['Reembolsos','—'],['Efectivo','—'],['Cuota',money(v.weekly)],['Saldo Semana','—']];
   const targetRows = rows.length ? rows : rowsForCurrentWeek().filter(r=>r.vehicleId===v.id);
-  const targetOptions = targetRows.map(r => `<option value="${r.date}">${fmtShort(r.date)} · ${paymentStatusV3(r).pending > .01 ? 'pendiente '+money(paymentStatusV3(r).pending) : 'pagada'}</option>`).join('');
+  const currentWeekIso = isoDate(weekDate());
+  const preferredDate = targetRows.some(r => r.date === currentWeekIso) ? currentWeekIso : (targetRows.length ? targetRows[targetRows.length - 1].date : '');
+  const targetOptions = targetRows.map(r => `<option value="${r.date}" ${r.date === preferredDate ? 'selected' : ''}>${fmtShort(r.date)} · ${paymentStatusV3(r).pending > .01 ? 'pendiente '+money(paymentStatusV3(r).pending) : 'pagada'}</option>`).join('');
   return `<div class="uberLayout">
     <div>
       <div class="legacySummary" id="legacySummary_${safeIdV3(v.id)}">${summary.map((r,i)=>`<div class="legacyRow ${i===5?'legacyBalance':''}"><span>${escapeHtmlV3(r[0]||'')}</span><b>${escapeHtmlV3(String(r[1]||''))}</b></div>`).join('')}</div>
