@@ -65,10 +65,26 @@ loadProductionData = async function () {
 };
 
 function openPaymentRowsV3(vehicleId) {
+  const v = contractVehicles.find(x => x.id === vehicleId);
   const current = rowsForCurrentWeek().filter(r => r.vehicleId === vehicleId);
   const late = getLateRows().filter(r => r.vehicleId === vehicleId);
   const map = new Map();
   [...late, ...current].forEach(r => map.set(r.key, r));
+
+  // El plan público puede conocer atrasos anteriores al inicio de esta app.
+  // Se incorporan como cuotas abiertas sin inventar pagos internos.
+  const dash = dashboardCardV3(vehicleId);
+  if (v && dash && Array.isArray(dash.legacyPending)) {
+    dash.legacyPending.forEach(p => {
+      const date = normalizeSheetDate(p.date); if (!date) return;
+      const key = paymentKey(vehicleId, date), st = getPaymentState(vehicleId, date), amount = Number(p.quota || v.weekly || 0);
+      if (!map.has(key)) map.set(key, {
+        planId:key, vehicleId, vehicle:v.name, date, visualDate:date, amount,
+        received:Number(st.received || 0), realDate:st.realDate || '', status:st.status || 'Pendiente',
+        pagoId:st.pagoId || '', key, source:'legacy', legacyWeek:Number(p.week || 0)
+      });
+    });
+  }
   return [...map.values()].sort((a, b) => a.date.localeCompare(b.date));
 }
 function paymentStatusV3(row) {
@@ -102,7 +118,8 @@ renderWeek = function () {
 };
 
 function findPaymentRowV3(key) {
-  return [...getLateRows(), ...rowsForCurrentWeek()].find(r => r.key === key) || null;
+  const parts=String(key||'').split('|'), vehicleId=parts[0]||'';
+  return openPaymentRowsV3(vehicleId).find(r => r.key === key) || [...getLateRows(), ...rowsForCurrentWeek()].find(r => r.key === key) || null;
 }
 function openPaymentV3(encodedKey) {
   const key = decodeURIComponent(encodedKey);
@@ -128,7 +145,8 @@ async function savePaymentV3() {
   if (!selectedPaymentV3) return;
   const row = selectedPaymentV3, amount = Number($('paymentAmount').value || 0), st = getPaymentState(row.vehicleId, row.date), pending = Math.max(0, row.amount - st.received);
   if (!(amount > 0)) return alert('Ingresá un monto mayor a ₡0.');
-  if (amount > pending + .01 && !confirm(`El abono es ${money(amount - pending)} mayor al pendiente. ¿Querés registrarlo igualmente?`)) return;
+  if (pending <= .01) return alert('Esta cuota ya está completamente pagada.');
+  if (amount > pending + .01) return alert(`El máximo que falta de esta cuota es ${money(pending)}. Si existe dinero adicional, registralo en la siguiente semana correspondiente.`);
   $('savePaymentButton').disabled = true;
   try {
     const after = st.received + amount;
@@ -138,19 +156,21 @@ async function savePaymentV3() {
       estado: after >= row.amount - .01 ? 'PAGADO' : 'PARCIAL', nota: $('paymentNote').value.trim(), origen: 'MANUAL'
     });
     if (!res.ok) throw new Error(res.message || 'No se pudo registrar el abono');
-    closePaymentV3(); await loadProductionData(); renderAll();
+    closePaymentV3(); await loadProductionData(); planDashboardLoadedV3=false; renderAll();
   } catch (e) { alert(e.message || 'Error registrando el abono'); }
   finally { $('savePaymentButton').disabled = false; }
 }
 async function removeLastPaymentV3(encodedKey) {
   const key = decodeURIComponent(encodedKey), st = paymentState[key];
   if (!st || !Array.isArray(st.movements) || !st.movements.length) return;
-  const last = st.movements[st.movements.length - 1];
-  if (!confirm(`¿Eliminar el último abono de ${money(last.amount)}?`)) return;
+  const manual = st.movements.filter(m => String(m.origin || 'MANUAL').toUpperCase() !== 'UBER');
+  if (!manual.length) return alert('Esta cuota fue alimentada desde Uber. Corregila desde Uber / Plan de pagos para mantener la conciliación completa.');
+  const last = manual[manual.length - 1];
+  if (!confirm(`¿Eliminar el último abono manual de ${money(last.amount)}?`)) return;
   try {
     const r = await backend('unmarkPayment', { sessionToken: sessionStorage.getItem(SESSION_KEY), pagoId: last.pagoId });
     if (!r.ok) throw new Error(r.message || 'No se pudo eliminar');
-    await loadProductionData(); renderAll();
+    await loadProductionData(); planDashboardLoadedV3=false; renderAll();
   } catch (e) { alert(e.message || 'Error eliminando el abono'); }
 }
 
@@ -282,7 +302,7 @@ async function saveUberWeekV3(vehicleId) {
   try{
     const r=await backend('saveUberWeek',payload); if(!r.ok)throw new Error(r.message||'No se pudo guardar');
     await loadProductionData(); await loadPlanDashboardV3(true); renderAll();
-    alert(`Semana guardada. Disponible Uber: ${money(r.rawAvailable)} · pendiente de esa cuota: ${money(r.targetPending)}.`);
+    alert(`Semana guardada. Disponible Uber: ${money(r.rawAvailable)} · saldo arrastrado: ${money(r.carryIn||0)} · pendiente de esa cuota: ${money(r.targetPending)}${Number(r.unapplied||0)>0?' · sobrante no arrastrado: '+money(r.unapplied):''}.`);
   }catch(e){alert(e.message||'Error guardando Uber');}
 }
 
