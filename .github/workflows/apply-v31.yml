@@ -1,0 +1,34 @@
+name: Apply V3.1 patch
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'patch_v31.py'
+      - '.github/workflows/apply-v31.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Apply patch
+        run: python patch_v31.py
+      - name: Validate JavaScript
+        run: |
+          node --check app-v3.js
+          cp Code.gs /tmp/code-v31.js
+          node --check /tmp/code-v31.js
+      - name: Commit production changes
+        run: |
+          rm -f patch_v31.py .github/workflows/apply-v31.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "Apply V3.1 UX and expense updates"
+          git push
