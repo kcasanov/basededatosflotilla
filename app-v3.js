@@ -417,3 +417,120 @@ function safeIdV3(s){return String(s||'').replace(/[^a-zA-Z0-9_-]/g,'_');}
 function safeFileV3(s){return String(s||'').replace(/[^a-zA-Z0-9_-]+/g,'_').replace(/^_+|_+$/g,'');}
 function escapeHtmlV3(s){return String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
 function escapeAttrV3(s){return escapeHtmlV3(s);}
+
+
+/* V3.1 · Danny first, abonos desde Uber, gastos editables */
+const renderUberV30 = renderUberV3;
+renderUberV3 = function () {
+  renderUberV30();
+  const box = $('uberCards');
+  if (!box) return;
+
+  // Danny/S1 siempre primero porque es la cuenta operativa que se actualiza con mayor frecuencia.
+  const danny = contractVehicles.find(v => String(v.driver || '').trim().toLowerCase() === 'danny');
+  if (danny) {
+    const card = $('controlCard_' + safeIdV3(danny.id));
+    if (card) box.prepend(card);
+  }
+
+  // Cada semana pendiente puede abonarse directamente con el mismo modal de Semana actual.
+  contractVehicles.forEach(v => {
+    const card = $('controlCard_' + safeIdV3(v.id));
+    if (!card) return;
+    card.querySelectorAll('.pendingWeekLine').forEach(line => {
+      if (line.querySelector('.quickAbonoV31')) return;
+      const jump = [...line.querySelectorAll('button')].find(btn => /jumpToWeekV3/.test(btn.getAttribute('onclick') || ''));
+      if (!jump) return;
+      const match = (jump.getAttribute('onclick') || '').match(/jumpToWeekV3\('([^']+)'\)/);
+      if (!match) return;
+      const date = match[1];
+      const row = openPaymentRowsV3(v.id).find(r => r.date === date && paymentStatusV3(r).pending > .01);
+      if (!row) return;
+      const abono = document.createElement('button');
+      abono.className = 'dark miniBtn quickAbonoV31';
+      abono.type = 'button';
+      abono.textContent = 'Abonar';
+      abono.onclick = () => openPaymentV3(encodeURIComponent(row.key));
+      jump.textContent = 'Ver semana';
+      line.appendChild(abono);
+    });
+  });
+};
+
+function moveLateBoxV31() {
+  const section = $('semana'), late = $('lateBox');
+  if (!section || !late) return;
+  const cards = [...section.children].filter(el => el.classList && el.classList.contains('card') && el.id !== 'lateBox');
+  if (cards.length < 2) return;
+  late.classList.add('card');
+  late.style.marginTop = '';
+  cards[1].after(late);
+}
+
+function rawAccountTypeV31(type) {
+  return type === 'automatic' ? 'AUTOMATICO_PLAN' : type === 'remainder' ? 'REMANENTE' : 'SEMANAL';
+}
+function rawPriorityV31(priority) {
+  return priority === 'critical' ? 'CRITICA' : priority === 'medium' ? 'MEDIA' : 'BAJA';
+}
+
+renderExpenseConfig = function () {
+  const body = $('expenseConfigBody');
+  if (!body) return;
+  body.innerHTML = expenseConfig.slice().sort((a, b) => a.order - b.order).map(e => {
+    const rawType = rawAccountTypeV31(e.type), rawPriority = rawPriorityV31(e.priority);
+    const amountDisabled = rawType !== 'SEMANAL' ? 'disabled' : '';
+    return `<tr data-expense-row="${escapeAttrV3(e.id)}">
+      <td><input data-e="order" type="number" min="1" step="1" value="${Number(e.order || 0)}" style="width:70px"></td>
+      <td><input data-e="name" value="${escapeAttrV3(e.name)}" style="min-width:160px"></td>
+      <td><select data-e="type"><option value="SEMANAL" ${rawType==='SEMANAL'?'selected':''}>Semanal</option><option value="AUTOMATICO_PLAN" ${rawType==='AUTOMATICO_PLAN'?'selected':''}>Automático plan</option><option value="REMANENTE" ${rawType==='REMANENTE'?'selected':''}>Remanente</option></select></td>
+      <td><input data-e="amount" type="number" min="0" step="500" value="${Number(e.amount || 0)}" ${amountDisabled} style="width:120px"><div class="miniNote">${escapeHtmlV3(e.rule)}</div></td>
+      <td><select data-e="priority"><option value="CRITICA" ${rawPriority==='CRITICA'?'selected':''}>Crítica</option><option value="MEDIA" ${rawPriority==='MEDIA'?'selected':''}>Media</option><option value="BAJA" ${rawPriority==='BAJA'?'selected':''}>Baja</option></select></td>
+      <td><div class="expenseDatesV31"><input data-e="from" type="date" value="${escapeAttrV3(e.from || '')}"><span>→</span><input data-e="to" type="date" value="${escapeAttrV3(e.to || '')}"></div><button class="dark miniBtn" type="button" onclick="saveExpenseConfigV31('${escapeAttrV3(e.id)}')">Guardar</button></td>
+    </tr>`;
+  }).join('');
+};
+
+async function saveExpenseConfigV31(accountId) {
+  const row = document.querySelector(`[data-expense-row="${CSS.escape(accountId)}"]`);
+  if (!row) return;
+  const get = name => row.querySelector(`[data-e="${name}"]`);
+  const payload = {
+    sessionToken: sessionStorage.getItem(SESSION_KEY),
+    accountId,
+    nombre: get('name').value.trim(),
+    tipo: get('type').value,
+    monto: Number(get('amount').value || 0),
+    prioridad: get('priority').value,
+    orden: Number(get('order').value || 0),
+    vigenteDesde: get('from').value || '',
+    vigenteHasta: get('to').value || ''
+  };
+  if (!payload.nombre || !(payload.orden > 0)) return alert('Revisá nombre y orden.');
+  try {
+    const r = await backend('updateAccount', payload);
+    if (!r.ok) throw new Error(r.message || 'No se pudo guardar la cuenta');
+    await loadProductionData();
+    renderAll();
+  } catch (e) {
+    alert(e.message || 'Error guardando la cuenta');
+  }
+}
+
+function initV31() {
+  moveLateBoxV31();
+  const add = $('addExpense');
+  if (add) {
+    add.textContent = '↻ Recargar';
+    add.onclick = async () => {
+      try { await loadProductionData(); renderAll(); }
+      catch (e) { alert(e.message || 'No se pudieron recargar las cuentas'); }
+    };
+  }
+  const style = document.createElement('style');
+  style.textContent = `.expenseConfigTable input,.expenseConfigTable select{padding:7px 8px;font-size:12px;border:1px solid var(--l);border-radius:8px;background:inherit;color:inherit}.expenseDatesV31{display:flex;align-items:center;gap:6px;margin-bottom:7px}.expenseDatesV31 input{width:132px}.quickAbonoV31{margin-left:4px}body.dark .expenseConfigTable input,body.dark .expenseConfigTable select{background:#111;color:#f5f5f5;border-color:#2a2a2a}`;
+  document.head.appendChild(style);
+}
+
+document.addEventListener('DOMContentLoaded', initV31);
+window.saveExpenseConfigV31 = saveExpenseConfigV31;

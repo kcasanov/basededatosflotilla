@@ -28,6 +28,7 @@ function doPost(e) {
       case 'unmarkPayment': result = protected_(body, unmarkPayment_); break;
       case 'createVehicle': result = protected_(body, createVehicle_); break;
       case 'updateVehicleConfig': result = protected_(body, updateVehicleConfig_); break;
+      case 'updateAccount': result = protected_(body, updateAccount_); break;
       case 'getPlanDashboard': result = protected_(body, getPlanDashboard_); break;
       case 'saveUberWeek': result = protected_(body, saveUberWeek_); break;
       default: result = {ok:false, message:'Acción no válida'};
@@ -358,3 +359,28 @@ function log_(entity,entityId,action,detail,user){
   try{const sh=SpreadsheetApp.openById(SPREADSHEET_ID).getSheetByName('Historial');sh.appendRow([Utilities.getUuid(),new Date(),entity,entityId,action,detail,user||'system','AppsScript']);}catch(e){}
 }
 function makePinHash_(salt,pin){return hash_(String(salt)+':'+String(pin));}
+
+
+function updateAccount_(body,device){
+  const accountId=String(body.accountId||'').trim();
+  if(!accountId)return{ok:false,message:'Cuenta requerida.'};
+  const ss=SpreadsheetApp.openById(SPREADSHEET_ID),sh=ss.getSheetByName('Cuentas');
+  const values=sh.getDataRange().getValues(),headers=values[0].map(String),idx={};headers.forEach((h,i)=>idx[h]=i);
+  let row=-1;for(let r=1;r<values.length;r++)if(String(values[r][idx.CuentaID])===accountId){row=r+1;break;}
+  if(row<0)return{ok:false,message:'Cuenta no encontrada.'};
+  const type=String(body.tipo||'SEMANAL').toUpperCase(),priority=String(body.prioridad||'BAJA').toUpperCase();
+  if(['SEMANAL','AUTOMATICO_PLAN','REMANENTE'].indexOf(type)<0)return{ok:false,message:'Tipo de cuenta inválido.'};
+  if(['CRITICA','MEDIA','BAJA'].indexOf(priority)<0)return{ok:false,message:'Prioridad inválida.'};
+  const amount=Math.max(0,num_(body.monto)),order=Math.max(1,Math.round(num_(body.orden)||1));
+  const name=String(body.nombre||'').trim();if(!name)return{ok:false,message:'Nombre requerido.'};
+  const from=String(body.vigenteDesde||''),to=String(body.vigenteHasta||'');
+  sh.getRange(row,idx.Nombre+1).setValue(name);
+  sh.getRange(row,idx.Tipo+1).setValue(type);
+  sh.getRange(row,idx.Monto+1).setValue(type==='SEMANAL'?amount:0);
+  sh.getRange(row,idx.Prioridad+1).setValue(priority);
+  sh.getRange(row,idx.Orden+1).setValue(order);
+  sh.getRange(row,idx.VigenteDesde+1).setValue(from);
+  sh.getRange(row,idx.VigenteHasta+1).setValue(to);
+  log_('CUENTA',accountId,'UPDATE_ACCOUNT',JSON.stringify({name:name,type:type,amount:type==='SEMANAL'?amount:0,priority:priority,order:order,from:from,to:to}),device);
+  return{ok:true};
+}
