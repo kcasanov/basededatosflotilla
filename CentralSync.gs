@@ -239,7 +239,7 @@ function centralBuildCurrentWeekModel_(weekDate) {
 
   var priorityRank = {CRITICA:0, MEDIA:1, BAJA:2};
   var regular = accounts.filter(function(a){return a.type !== 'REMANENTE';}).sort(function(a,b){
-    return (priorityRank[a.priority] == null ? 2 : priorityRank[a.priority]) - (priorityRank[b.priority] == null ? 2 : priorityRank[b.priority]) || a.order - b.order;
+    return (priorityRank[a.priority] == null ? 2 : priorityRank[a.priority]) - (priorityRank[b.priority] == null ? 2 : priorityRank[a.priority]) || a.order - b.order;
   });
   var remaining = available;
   regular.forEach(function(a) { a.assigned = Math.min(a.need, remaining); remaining -= a.assigned; });
@@ -379,3 +379,66 @@ function centralFindAccount_(accounts, id) {
 function centralRound_(value) {
   return Math.round(num_(value) * 100) / 100;
 }
+
+/* V3.2 · Spark Celeste como remanente de seguros + resumen para UI */
+var _centralDesiredItemsV32_ = centralDesiredItems_;
+centralDesiredItems_ = function(model, mappings) {
+  var out = _centralDesiredItemsV32_(model, mappings);
+  var insurance = model.accounts.find(function(a){return a.id === 'seguros';});
+  var assignedInsurance = insurance ? centralRound_(insurance.assigned) : 0;
+  var alreadyMapped = out.filter(function(x){return x.cuentaId === 'seguros';}).reduce(function(sum,x){return sum + num_(x.desiredAmount);},0);
+  var excess = centralRound_(Math.max(0, assignedInsurance - alreadyMapped));
+  var excessMap = mappings.find(function(m){
+    return String(m.CuentaID || '') === 'seguros' && String(m.Modo || '').toUpperCase() === 'INSURANCE_EXCESS';
+  });
+  if (excessMap && excess > 0.005) {
+    out.push({
+      syncKey:String(excessMap.SyncKey || 'seguro_sparkceleste'),
+      cuentaId:'seguros',
+      vehicleId:'',
+      desiredAmount:excess,
+      map:excessMap
+    });
+  }
+  return out;
+};
+
+var _centralSyncCurrentWeekV32_ = syncCentralCurrentWeek_;
+syncCentralCurrentWeek_ = function(device) {
+  var result = _centralSyncCurrentWeekV32_(device);
+  if (!result || !Array.isArray(result.results)) return result;
+  var moved = result.results.filter(function(r){return r.status === 'OK' && Math.abs(num_(r.delta)) > 0.005;}).map(function(r){
+    var delta = centralRound_(r.delta), after = centralRound_(r.newBalance), before = centralRound_(after - delta);
+    return {
+      syncKey:String(r.syncKey || ''),
+      centralAccountId:String(r.centralAccountId || ''),
+      beforeBalance:before,
+      delta:delta,
+      afterBalance:after
+    };
+  });
+  result.moved = moved;
+  result.totalAdded = centralRound_(moved.reduce(function(sum,r){return sum + Math.max(0,num_(r.delta));},0));
+  result.totalRemoved = centralRound_(moved.reduce(function(sum,r){return sum + Math.max(0,-num_(r.delta));},0));
+  result.totalNet = centralRound_(moved.reduce(function(sum,r){return sum + num_(r.delta);},0));
+  return result;
+};
+
+// Reemplaza los wrappers iniciales para devolver el detalle de Central al navegador.
+markPayment_ = function(body, device) {
+  var result = _centralBaseMarkPayment_(body, device);
+  if (result && result.ok) result.centralSync = syncCentralCurrentWeekSafe_(device);
+  return result;
+};
+
+unmarkPayment_ = function(body, device) {
+  var result = _centralBaseUnmarkPayment_(body, device);
+  if (result && result.ok) result.centralSync = syncCentralCurrentWeekSafe_(device);
+  return result;
+};
+
+saveUberWeek_ = function(body, device) {
+  var result = _centralBaseSaveUberWeek_(body, device);
+  if (result && result.ok) result.centralSync = syncCentralCurrentWeekSafe_(device);
+  return result;
+};
