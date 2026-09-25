@@ -4,7 +4,7 @@
    - Un solo bootstrap por actualización.
    - F5 pinta el último snapshot de la pestaña de inmediato.
    - La actualización fresca ocurre en segundo plano.
-   - Uber / Plan de pagos se consulta solamente al abrir esa pestaña.
+   - Uber / Plan de pagos se consulta en segundo plano y nunca bloquea la pantalla principal.
    - Un timeout ya no dispara tres esperas consecutivas.
 */
 (() => {
@@ -12,6 +12,7 @@
   const SNAPSHOT_KEY_V34 = 'flotilla_bootstrap_snapshot_v34';
   let bootstrapOverrideV34 = null;
   let backgroundRefreshRunningV34 = false;
+  let planBackgroundRunningV34 = false;
 
   function parseSnapshotV34() {
     try {
@@ -89,7 +90,7 @@
       balance: Number(x.SaldoSemana || 0), rawAvailable: Number(x.MontoDisponibleBruto || 0), status: String(x.Estado || '')
     })) : [];
 
-    // El archivo externo Plan de pagos es pesado. Solo se carga cuando el usuario abre Uber.
+    // El plan externo se refresca después, sin bloquear el render principal.
     planDashboardLoadedV3 = false;
   }
 
@@ -145,6 +146,19 @@
     if (mode === 'ok') freshnessV34.timer = setTimeout(() => { badge.style.display = 'none'; }, 1800);
   }
 
+  async function refreshPlanInBackgroundV34() {
+    if (planBackgroundRunningV34 || !sessionStorage.getItem(SESSION_KEY)) return;
+    planBackgroundRunningV34 = true;
+    try {
+      await loadPlanDashboardV3(true);
+      renderAll();
+    } catch (_) {
+      // El core ya está visible; un fallo del archivo externo no bloquea la app.
+    } finally {
+      planBackgroundRunningV34 = false;
+    }
+  }
+
   async function refreshCoreInBackgroundV34() {
     if (backgroundRefreshRunningV34) return;
     const sessionToken = sessionStorage.getItem(SESSION_KEY);
@@ -167,6 +181,7 @@
       await applyBootstrapV34(r);
       renderAll();
       freshnessV34('Datos actualizados ✓', 'ok');
+      setTimeout(refreshPlanInBackgroundV34, 120);
     } catch (_) {
       freshnessV34('Mostrando último dato guardado · actualización pendiente', 'error');
     } finally {
@@ -200,6 +215,7 @@
       const r = await loadProductionData();
       unlockApp();
       freshnessV34('Datos actualizados ✓', 'ok');
+      setTimeout(refreshPlanInBackgroundV34, 120);
       return !!r;
     } catch (err) {
       if (err && err.authRequired) {
@@ -245,6 +261,7 @@
       await loadProductionData();
       unlockApp();
       freshnessV34('Datos actualizados ✓', 'ok');
+      setTimeout(refreshPlanInBackgroundV34, 120);
     } catch (err) {
       if (authenticated || sessionStorage.getItem(SESSION_KEY)) {
         authMsg('PIN correcto y sesión abierta. El backend tardó demasiado; refrescá para reintentar sin volver a ingresar el PIN.', false);
