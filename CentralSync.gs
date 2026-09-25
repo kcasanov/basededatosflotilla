@@ -1,170 +1,217 @@
 /*
- * Base de Datos Flotilla · Integración Central de Cuentas
+ * Base de Datos Flotilla · Integración Central de Cuentas · V3.3
  *
- * Sincroniza únicamente el fondeo asignado desde Flotilla hacia las cuentas
- * compartidas de Central de Cuentas. El token privado se guarda en Script
- * Properties como CENTRAL_API_TOKEN; nunca en el HTML ni en Google Sheets.
+ * La sincronización con Central se ejecuta en una llamada separada del guardado
+ * del pago. Así un fallo/timeout de Central nunca impide guardar el abono.
  *
- * Requiere en Base de datos flotilla:
- *   - Config: CENTRAL_API_URL, CENTRAL_SYNC_ENABLED
- *   - Central_Map
- *   - Central_Sync
+ * Script Properties requeridas:
+ *   CENTRAL_API_TOKEN
+ *
+ * Config requerida:
+ *   CENTRAL_API_URL
+ *   CENTRAL_SYNC_ENABLED
+ *   CENTRAL_SYNC_START
  */
 
-var _centralBaseMarkPayment_ = markPayment_;
-markPayment_ = function(body, device) {
-  var result = _centralBaseMarkPayment_(body, device);
-  if (result && result.ok) syncCentralCurrentWeekSafe_(device);
-  return result;
+var _baseDoPostV33_ = doPost;
+doPost = function(e) {
+  try {
+    var body = JSON.parse((e && e.postData && e.postData.contents) || '{}');
+    if (String(body.action || '') === 'syncCentral') {
+      return json_(protected_(body, syncCentralAction_));
+    }
+  } catch (err) {
+    return json_({ok:false, message:'Error del servidor', detail:String(err && err.message || err)});
+  }
+  return _baseDoPostV33_(e);
 };
 
-var _centralBaseUnmarkPayment_ = unmarkPayment_;
-unmarkPayment_ = function(body, device) {
-  var result = _centralBaseUnmarkPayment_(body, device);
-  if (result && result.ok) syncCentralCurrentWeekSafe_(device);
+function authorizeCentralConnection() {
+  var token = props_().getProperty('CENTRAL_API_TOKEN');
+  if (!token) throw new Error('Falta CENTRAL_API_TOKEN en Script Properties.');
+  var result = centralApiGetAccounts_(token);
+  Logger.log(JSON.stringify(result));
   return result;
-};
-
-var _centralBaseSaveUberWeek_ = saveUberWeek_;
-saveUberWeek_ = function(body, device) {
-  var result = _centralBaseSaveUberWeek_(body, device);
-  if (result && result.ok) syncCentralCurrentWeekSafe_(device);
-  return result;
-};
-
-function syncCentralCurrentWeekNow() {
-  return syncCentralCurrentWeek_('manual_apps_script');
 }
 
-function syncCentralCurrentWeekSafe_(device) {
+function syncCentralCurrentWeekNow() {
+  return syncCentralCurrentWeek_('manual_apps_script', centralCurrentTuesday_());
+}
+
+function syncCentralAction_(body, device) {
+  var weekDate = ymd_(body.weekDate) || centralCurrentTuesday_();
+  return syncCentralCurrentWeek_(device || 'system', weekDate);
+}
+
+function syncCentralCurrentWeekSafe_(device, weekDate) {
   try {
-    return syncCentralCurrentWeek_(device || 'system');
+    return syncCentralCurrentWeek_(device || 'system', weekDate || centralCurrentTuesday_());
   } catch (err) {
-    log_('CENTRAL_SYNC', 'current_week', 'SYNC_ERROR', String(err && err.message || err), device || 'system');
+    log_('CENTRAL_SYNC', String(weekDate || 'current_week'), 'SYNC_ERROR', String(err && err.message || err), device || 'system');
     return {ok:false, message:String(err && err.message || err)};
   }
 }
 
-function syncCentralCurrentWeek_(device) {
-  if (String(centralConfigValue_('CENTRAL_SYNC_ENABLED', 'FALSE')).toUpperCase() !== 'TRUE') {
-    return {ok:true, disabled:true};
+function syncCentralCurrentWeek_(device, weekDate) {
+  weekDate = ymd_(weekDate) || centralCurrentTuesday_();
+  var enabled = String(centralConfigValue_('CENTRAL_SYNC_ENABLED', 'FALSE')).toUpperCase() === 'TRUE';
+  if (!enabled) return {ok:true, disabled:true, weekDate:weekDate, message:'Sincronización pausada.'};
+
+  var start = centralConfigValue_('CENTRAL_SYNC_START', '2026-09-29');
+  if (start && weekDate < start) {
+    return {ok:true, skipped:true, weekDate:weekDate, message:'Semana anterior al inicio de sincronización.'};
   }
 
   var token = props_().getProperty('CENTRAL_API_TOKEN');
   if (!token) {
-    log_('CENTRAL_SYNC', 'current_week', 'NOT_CONFIGURED', 'Falta CENTRAL_API_TOKEN en Script Properties', device);
-    return {ok:true, configured:false, message:'Falta CENTRAL_API_TOKEN en Script Properties.'};
+    log_('CENTRAL_SYNC', weekDate, 'NOT_CONFIGURED', 'Falta CENTRAL_API_TOKEN en Script Properties', device);
+    return {ok:false, configured:false, weekDate:weekDate, message:'Falta CENTRAL_API_TOKEN en Script Properties.'};
   }
 
-  var weekDate = centralCurrentTuesday_();
-  var model = centralBuildCurrentWeekModel_(weekDate);
-  var mappings = centralActiveMappings_();
-  var desired = centralDesiredItems_(model, mappings);
-  if (!desired.length) return {ok:true, configured:true, weekDate:weekDate, results:[]};
+  var lock = LockService.getScriptLock();
+  if (!lock.tryLock(5000)) return {ok:false, busy:true, weekDate:weekDate, message:'Ya hay otra sincronización en proceso.'};
+  try {
+    var model = centralBuildWeekModel_(weekDate);
+    var mappings = centralActiveMappings_();
+    var desired = centralDesiredItems_(model, mappings);
+    if (!desired.length) return centralSummarizeResult_({ok:true, configured:true, weekDate:weekDate, results:[]});
 
-  var snapshot = centralApiGetAccounts_(token);
-  if (!snapshot.ok) throw new Error(snapshot.error || 'No se pudieron leer las cuentas de Central.');
-  var accounts = snapshot.accounts || [];
-  var results = [];
+    var snapshot = centralApiGetAccounts_(token);
+    if (!snapshot.ok) throw new Error(snapshot.error || 'No se pudieron leer las cuentas de Central.');
+    var accounts = snapshot.accounts || [];
+    var results = [];
 
-  desired.forEach(function(item) {
-    var map = item.map;
-    var centralId = String(map.CentralAccountID || '').trim();
-    if (!centralId) {
-      results.push({syncKey:item.syncKey, skipped:true, reason:'CentralAccountID vacío'});
-      return;
-    }
+    desired.forEach(function(item) {
+      var map = item.map;
+      var centralId = String(map.CentralAccountID || '').trim();
+      if (!centralId) {
+        results.push({syncKey:item.syncKey, skipped:true, reason:'CentralAccountID vacío'});
+        return;
+      }
 
-    var account = centralFindAccount_(accounts, centralId);
-    if (!account && String(map.CuentaID || '') === 'u') {
-      var create = centralApiPost_(token, {
-        action:'createAccount',
+      var account = centralFindAccount_(accounts, centralId);
+      if (!account && String(item.cuentaId || '') === 'u') {
+        var create = centralApiPost_(token, {
+          action:'createAccount',
+          id:centralId,
+          name:'Fondo Universidad',
+          balance:0,
+          categoryId:String(map.CentralCategoryID || 'universidad')
+        });
+        if (!create.ok) {
+          results.push({syncKey:item.syncKey, error:create.error || 'No se pudo crear Fondo Universidad'});
+          return;
+        }
+        snapshot = centralApiGetAccounts_(token);
+        if (!snapshot.ok) {
+          results.push({syncKey:item.syncKey, error:snapshot.error || 'No se pudo refrescar Central'});
+          return;
+        }
+        accounts = snapshot.accounts || [];
+        account = centralFindAccount_(accounts, centralId);
+      }
+
+      if (!account) {
+        results.push({syncKey:item.syncKey, error:'Cuenta no encontrada en Central: ' + centralId});
+        return;
+      }
+
+      var prior = centralSyncState_(weekDate, item.syncKey);
+      var syncedBefore = prior ? num_(prior.SyncedAmount) : 0;
+      var desiredAmount = centralRound_(item.desiredAmount);
+      var delta = centralRound_(desiredAmount - syncedBefore);
+
+      if (Math.abs(delta) < 0.01) {
+        results.push({
+          syncKey:item.syncKey,
+          centralAccountId:centralId,
+          desiredAmount:desiredAmount,
+          delta:0,
+          status:'SIN_CAMBIOS'
+        });
+        return;
+      }
+
+      var beforeBalance = num_(account.balance);
+      var afterBalance = centralRound_(beforeBalance + delta);
+      if (afterBalance < -0.01) {
+        centralUpsertSyncState_(weekDate, item, desiredAmount, syncedBefore, delta, 'ERROR_SALDO_NEGATIVO');
+        results.push({syncKey:item.syncKey, error:'La corrección dejaría saldo negativo en ' + centralId});
+        return;
+      }
+      afterBalance = Math.max(0, afterBalance);
+
+      var operationId = 'FLOTILLA_' + weekDate.replace(/-/g, '') + '_' + item.syncKey;
+      var updated = centralApiPost_(token, {
+        action:'updateBalance',
         id:centralId,
-        name:'Fondo Universidad',
-        balance:0,
-        categoryId:String(map.CentralCategoryID || 'universidad')
+        balance:afterBalance,
+        context:{
+          type:'Fondeo automático Flotilla',
+          operationId:operationId,
+          month:weekDate.slice(0,7),
+          week:weekDate
+        }
       });
-      if (!create.ok) {
-        results.push({syncKey:item.syncKey, error:create.error || 'No se pudo crear Fondo Universidad'});
+
+      if (!updated.ok) {
+        centralUpsertSyncState_(weekDate, item, desiredAmount, syncedBefore, delta, 'ERROR: ' + String(updated.error || ''));
+        results.push({syncKey:item.syncKey, error:updated.error || 'No se pudo actualizar Central'});
         return;
       }
-      snapshot = centralApiGetAccounts_(token);
-      if (!snapshot.ok) {
-        results.push({syncKey:item.syncKey, error:snapshot.error || 'No se pudo refrescar Central'});
-        return;
-      }
-      accounts = snapshot.accounts || [];
-      account = centralFindAccount_(accounts, centralId);
-    }
 
-    if (!account) {
-      results.push({syncKey:item.syncKey, error:'Cuenta no encontrada en Central: ' + centralId});
-      return;
-    }
+      account.balance = afterBalance;
+      centralUpsertSyncState_(weekDate, item, desiredAmount, desiredAmount, delta, 'OK');
+      log_('CENTRAL_SYNC', operationId, 'SYNC_ACCOUNT', JSON.stringify({
+        weekDate:weekDate,
+        cuentaId:item.cuentaId,
+        vehicleId:item.vehicleId,
+        centralAccountId:centralId,
+        beforeBalance:beforeBalance,
+        delta:delta,
+        afterBalance:afterBalance
+      }), device);
 
-    var prior = centralSyncState_(weekDate, item.syncKey);
-    var syncedBefore = prior ? num_(prior.SyncedAmount) : 0;
-    var desiredAmount = centralRound_(item.desiredAmount);
-    var delta = centralRound_(desiredAmount - syncedBefore);
-
-    if (Math.abs(delta) < 0.01) {
-      results.push({syncKey:item.syncKey, centralAccountId:centralId, desiredAmount:desiredAmount, delta:0, status:'SIN_CAMBIOS'});
-      return;
-    }
-
-    var currentBalance = num_(account.balance);
-    var nextBalance = centralRound_(currentBalance + delta);
-    if (nextBalance < -0.01) {
-      centralUpsertSyncState_(weekDate, item, desiredAmount, syncedBefore, delta, 'ERROR_SALDO_NEGATIVO');
-      results.push({syncKey:item.syncKey, error:'La corrección dejaría saldo negativo en ' + centralId});
-      return;
-    }
-    nextBalance = Math.max(0, nextBalance);
-
-    var operationId = 'FLOTILLA_' + weekDate.replace(/-/g, '') + '_' + item.syncKey;
-    var updated = centralApiPost_(token, {
-      action:'updateBalance',
-      id:centralId,
-      balance:nextBalance,
-      context:{
-        type:'Fondeo automático Flotilla',
-        operationId:operationId,
-        month:weekDate.slice(0,7),
-        week:weekDate
-      }
+      results.push({
+        syncKey:item.syncKey,
+        centralAccountId:centralId,
+        desiredAmount:desiredAmount,
+        beforeBalance:beforeBalance,
+        delta:delta,
+        newBalance:afterBalance,
+        status:'OK'
+      });
     });
 
-    if (!updated.ok) {
-      centralUpsertSyncState_(weekDate, item, desiredAmount, syncedBefore, delta, 'ERROR: ' + String(updated.error || ''));
-      results.push({syncKey:item.syncKey, error:updated.error || 'No se pudo actualizar Central'});
-      return;
-    }
-
-    account.balance = nextBalance;
-    centralUpsertSyncState_(weekDate, item, desiredAmount, desiredAmount, delta, 'OK');
-    log_('CENTRAL_SYNC', operationId, 'SYNC_ACCOUNT', JSON.stringify({
-      weekDate:weekDate,
-      cuentaId:item.cuentaId,
-      vehicleId:item.vehicleId,
-      centralAccountId:centralId,
-      delta:delta,
-      newBalance:nextBalance
-    }), device);
-
-    results.push({
-      syncKey:item.syncKey,
-      centralAccountId:centralId,
-      desiredAmount:desiredAmount,
-      delta:delta,
-      newBalance:nextBalance,
-      status:'OK'
-    });
-  });
-
-  return {ok:true, configured:true, weekDate:weekDate, results:results};
+    return centralSummarizeResult_({ok:true, configured:true, weekDate:weekDate, results:results});
+  } finally {
+    lock.releaseLock();
+  }
 }
 
-function centralBuildCurrentWeekModel_(weekDate) {
+function centralSummarizeResult_(result) {
+  var moved = (result.results || []).filter(function(r) {
+    return r.status === 'OK' && Math.abs(num_(r.delta)) > 0.005;
+  }).map(function(r) {
+    var delta = centralRound_(r.delta);
+    var after = centralRound_(r.newBalance);
+    var before = r.beforeBalance !== undefined ? centralRound_(r.beforeBalance) : centralRound_(after - delta);
+    return {
+      syncKey:String(r.syncKey || ''),
+      centralAccountId:String(r.centralAccountId || ''),
+      beforeBalance:before,
+      delta:delta,
+      afterBalance:after
+    };
+  });
+  result.moved = moved;
+  result.totalAdded = centralRound_(moved.reduce(function(sum,r){return sum + Math.max(0,num_(r.delta));},0));
+  result.totalRemoved = centralRound_(moved.reduce(function(sum,r){return sum + Math.max(0,-num_(r.delta));},0));
+  result.totalNet = centralRound_(moved.reduce(function(sum,r){return sum + num_(r.delta);},0));
+  return result;
+}
+
+function centralBuildWeekModel_(weekDate) {
   var ss = SpreadsheetApp.openById(SPREADSHEET_ID);
   var vehicles = sheetObjects_(ss.getSheetByName('Vehiculos')).filter(function(v) {
     var op = String(v.OperacionEstado || 'ACTIVO').toUpperCase();
@@ -172,7 +219,8 @@ function centralBuildCurrentWeekModel_(weekDate) {
   });
   var plans = sheetObjects_(ss.getSheetByName('Plan_Pagos'));
   var weekStart = new Date(weekDate + 'T00:00:00Z');
-  var weekEnd = new Date(weekStart.getTime()); weekEnd.setUTCDate(weekEnd.getUTCDate() + 6);
+  var weekEnd = new Date(weekStart.getTime());
+  weekEnd.setUTCDate(weekEnd.getUTCDate() + 6);
   var rows = [];
 
   vehicles.forEach(function(v) {
@@ -198,18 +246,31 @@ function centralBuildCurrentWeekModel_(weekDate) {
     var frequency = String(v.Frecuencia || 'SEMANAL').toUpperCase();
     if (frequency === 'QUINCENAL_15_FIN_MES') {
       centralSpecialDatesForWindow_(v, weekStart, weekEnd).forEach(function(date) {
-        rows.push({vehicleId:vehicleId,date:date,amount:num_(v.CuotaSemanal),iva:num_(v.CuotaSemanal)*0.13,insurance:centralDefaultInsurance_(v)});
+        rows.push({
+          vehicleId:vehicleId,
+          date:date,
+          amount:num_(v.CuotaSemanal),
+          iva:num_(v.CuotaSemanal) * 0.13,
+          insurance:centralDefaultInsurance_(v)
+        });
       });
       return;
     }
 
     var start = ymd_(v.FechaInicio), end = ymd_(v.FechaFin);
     if (!start || !end) return;
-    var d = new Date(start + 'T00:00:00Z'), finish = new Date(end + 'T00:00:00Z');
+    var d = new Date(start + 'T00:00:00Z');
+    var finish = new Date(end + 'T00:00:00Z');
     while (d < weekStart) d.setUTCDate(d.getUTCDate() + 7);
     while (d <= weekEnd && d <= finish) {
       var date = Utilities.formatDate(d, 'UTC', 'yyyy-MM-dd');
-      rows.push({vehicleId:vehicleId,date:date,amount:num_(v.CuotaSemanal),iva:num_(v.CuotaSemanal)*0.13,insurance:centralDefaultInsurance_(v)});
+      rows.push({
+        vehicleId:vehicleId,
+        date:date,
+        amount:num_(v.CuotaSemanal),
+        iva:num_(v.CuotaSemanal) * 0.13,
+        insurance:centralDefaultInsurance_(v)
+      });
       d.setUTCDate(d.getUTCDate() + 7);
     }
   });
@@ -220,10 +281,12 @@ function centralBuildCurrentWeekModel_(weekDate) {
   var automaticInsurance = rows.reduce(function(sum,r) { return sum + num_(r.insurance); }, 0);
 
   var accounts = sheetObjects_(ss.getSheetByName('Cuentas')).filter(function(a) {
-    var iso = weekDate, from = ymd_(a.VigenteDesde), to = ymd_(a.VigenteHasta);
-    return (!from || iso >= from) && (!to || iso <= to) && String(a.Activa || '').toUpperCase() !== 'FALSE';
+    var from = ymd_(a.VigenteDesde), to = ymd_(a.VigenteHasta);
+    return (!from || weekDate >= from) && (!to || weekDate <= to) && String(a.Activa || '').toUpperCase() !== 'FALSE';
   }).map(function(a) {
-    var id = String(a.CuentaID || ''), type = String(a.Tipo || 'SEMANAL').toUpperCase(), need = 0;
+    var id = String(a.CuentaID || '');
+    var type = String(a.Tipo || 'SEMANAL').toUpperCase();
+    var need = 0;
     if (id === 'iva') need = automaticIVA;
     else if (id === 'seguros') need = automaticInsurance;
     else if (type === 'SEMANAL') need = (id === 'casa' && centralIsFifthTuesday_(weekStart)) ? 0 : num_(a.Monto);
@@ -239,36 +302,57 @@ function centralBuildCurrentWeekModel_(weekDate) {
 
   var priorityRank = {CRITICA:0, MEDIA:1, BAJA:2};
   var regular = accounts.filter(function(a){return a.type !== 'REMANENTE';}).sort(function(a,b){
-    return (priorityRank[a.priority] == null ? 2 : priorityRank[a.priority]) - (priorityRank[b.priority] == null ? 2 : priorityRank[b.priority]) || a.order - b.order;
+    var ar = priorityRank[a.priority] == null ? 2 : priorityRank[a.priority];
+    var br = priorityRank[b.priority] == null ? 2 : priorityRank[b.priority];
+    return ar - br || a.order - b.order;
   });
   var remaining = available;
-  regular.forEach(function(a) { a.assigned = Math.min(a.need, remaining); remaining -= a.assigned; });
+  regular.forEach(function(a) {
+    a.assigned = Math.min(a.need, remaining);
+    remaining -= a.assigned;
+  });
   var rem = accounts.find(function(a){return a.type === 'REMANENTE';});
-  if (rem) { rem.need = Math.max(0, remaining); rem.assigned = Math.max(0, remaining); }
+  if (rem) {
+    rem.need = Math.max(0, remaining);
+    rem.assigned = Math.max(0, remaining);
+  }
 
   return {weekDate:weekDate, rows:rows, accounts:accounts, available:available};
 }
 
 function centralDesiredItems_(model, mappings) {
   var out = [];
+
   ['omoda','coopealianza','u'].forEach(function(cuentaId) {
     var expense = model.accounts.find(function(a){return a.id === cuentaId;});
-    var map = mappings.find(function(m){return String(m.CuentaID || '') === cuentaId && !String(m.VehicleID || '');});
-    if (expense && map) out.push({
-      syncKey:String(map.SyncKey || cuentaId),
-      cuentaId:cuentaId,
-      vehicleId:'',
-      desiredAmount:num_(expense.assigned),
-      map:map
+    var map = mappings.find(function(m){
+      return String(m.CuentaID || '') === cuentaId && !String(m.VehicleID || '');
     });
+    if (expense && map) {
+      out.push({
+        syncKey:String(map.SyncKey || cuentaId),
+        cuentaId:cuentaId,
+        vehicleId:'',
+        desiredAmount:num_(expense.assigned),
+        map:map
+      });
+    }
   });
 
   var insurance = model.accounts.find(function(a){return a.id === 'seguros';});
   var assignedInsurance = insurance ? num_(insurance.assigned) : 0;
   var totalInsurance = model.rows.reduce(function(sum,r){return sum + num_(r.insurance);},0);
+  if (totalInsurance <= 0) return out;
+
+  var mappedNeed = 0;
   model.rows.forEach(function(row) {
-    var map = mappings.find(function(m){return String(m.CuentaID || '') === 'seguros' && String(m.VehicleID || '') === String(row.vehicleId);});
-    if (!map || totalInsurance <= 0 || num_(row.insurance) <= 0) return;
+    var map = mappings.find(function(m){
+      return String(m.CuentaID || '') === 'seguros' &&
+             String(m.Modo || '').toUpperCase() === 'INSURANCE' &&
+             String(m.VehicleID || '') === String(row.vehicleId);
+    });
+    if (!map || num_(row.insurance) <= 0) return;
+    mappedNeed += num_(row.insurance);
     out.push({
       syncKey:String(map.SyncKey || ('seguro_' + row.vehicleId)),
       cuentaId:'seguros',
@@ -277,6 +361,24 @@ function centralDesiredItems_(model, mappings) {
       map:map
     });
   });
+
+  // El seguro del S1 no existe como cuenta en Central. La porción de Seguros
+  // que no tiene subcuenta de vehículo alimenta Spark Celeste mientras este
+  // todavía no tiene plan propio en Flotilla.
+  var excessNeed = Math.max(0, totalInsurance - mappedNeed);
+  var excessMap = mappings.find(function(m){
+    return String(m.CuentaID || '') === 'seguros' && String(m.Modo || '').toUpperCase() === 'INSURANCE_EXCESS';
+  });
+  if (excessMap && excessNeed > 0.005) {
+    out.push({
+      syncKey:String(excessMap.SyncKey || 'seguro_sparkceleste'),
+      cuentaId:'seguros',
+      vehicleId:'',
+      desiredAmount:centralRound_(assignedInsurance * excessNeed / totalInsurance),
+      map:excessMap
+    });
+  }
+
   return out;
 }
 
@@ -285,13 +387,15 @@ function centralDefaultInsurance_(vehicle) {
 }
 
 function centralSpecialDatesForWindow_(vehicle, start, end) {
-  var result = [], cursor = new Date(Date.UTC(start.getUTCFullYear(), start.getUTCMonth(), 1));
+  var result = [];
+  var cursor = new Date(Date.UTC(start.getUTCFullYear(), start.getUTCMonth(), 1));
   var hardStart = ymd_(vehicle.FechaInicio), hardEnd = ymd_(vehicle.FechaFin);
   while (cursor <= end) {
     var y = cursor.getUTCFullYear(), m = cursor.getUTCMonth();
     var last = new Date(Date.UTC(y, m + 1, 0)).getUTCDate();
     [15,last].forEach(function(day) {
-      var d = new Date(Date.UTC(y,m,day)), iso = Utilities.formatDate(d,'UTC','yyyy-MM-dd');
+      var d = new Date(Date.UTC(y,m,day));
+      var iso = Utilities.formatDate(d,'UTC','yyyy-MM-dd');
       if (d >= start && d <= end && (!hardStart || iso >= hardStart) && (!hardEnd || iso <= hardEnd)) result.push(iso);
     });
     cursor = new Date(Date.UTC(y,m+1,1));
@@ -312,7 +416,8 @@ function centralIsFifthTuesday_(date) {
 }
 
 function centralConfigValue_(key, fallback) {
-  var ss = SpreadsheetApp.openById(SPREADSHEET_ID), rows = sheetObjects_(ss.getSheetByName('Config'));
+  var ss = SpreadsheetApp.openById(SPREADSHEET_ID);
+  var rows = sheetObjects_(ss.getSheetByName('Config'));
   var hit = rows.find(function(r){return String(r.Clave || '') === String(key);});
   return hit && hit.Valor !== '' && hit.Valor != null ? String(hit.Valor) : fallback;
 }
@@ -323,33 +428,46 @@ function centralActiveMappings_() {
 }
 
 function centralSyncState_(weekDate, syncKey) {
-  var ss = SpreadsheetApp.openById(SPREADSHEET_ID), sh = ss.getSheetByName('Central_Sync');
+  var ss = SpreadsheetApp.openById(SPREADSHEET_ID);
+  var sh = ss.getSheetByName('Central_Sync');
   if (!sh) return null;
   var key = String(weekDate) + '|' + String(syncKey);
-  var rows = sheetObjects_(sh);
-  return rows.find(function(r){return String(r.StateKey || '') === key;}) || null;
+  return sheetObjects_(sh).find(function(r){return String(r.StateKey || '') === key;}) || null;
 }
 
 function centralUpsertSyncState_(weekDate, item, desired, synced, delta, status) {
-  var ss = SpreadsheetApp.openById(SPREADSHEET_ID), sh = ss.getSheetByName('Central_Sync');
+  var ss = SpreadsheetApp.openById(SPREADSHEET_ID);
+  var sh = ss.getSheetByName('Central_Sync');
   if (!sh) return;
-  var values = sh.getDataRange().getValues(), headers = values[0].map(String), idx = {};
+  var values = sh.getDataRange().getValues();
+  var headers = values[0].map(String), idx = {};
   headers.forEach(function(h,i){idx[h]=i;});
   var key = String(weekDate) + '|' + String(item.syncKey), row = -1;
-  for (var r=1;r<values.length;r++) if (String(values[r][idx.StateKey]) === key) {row=r+1;break;}
-  var data = [key,weekDate,item.cuentaId,item.vehicleId,String(item.map.CentralAccountID || ''),desired,synced,delta,status,new Date()];
-  if (row < 0) sh.appendRow(data); else sh.getRange(row,1,1,data.length).setValues([data]);
+  for (var r=1;r<values.length;r++) {
+    if (String(values[r][idx.StateKey]) === key) {row=r+1;break;}
+  }
+  var data = [
+    key,weekDate,item.cuentaId,item.vehicleId,String(item.map.CentralAccountID || ''),
+    desired,synced,delta,status,new Date()
+  ];
+  if (row < 0) sh.appendRow(data);
+  else sh.getRange(row,1,1,data.length).setValues([data]);
 }
 
 function centralApiGetAccounts_(token) {
   var url = centralConfigValue_('CENTRAL_API_URL','');
   if (!url) return {ok:false,error:'Falta CENTRAL_API_URL.'};
   try {
-    var response = UrlFetchApp.fetch(url + '?action=getAccounts&token=' + encodeURIComponent(token), {method:'get',muteHttpExceptions:true});
+    var response = UrlFetchApp.fetch(url + '?action=getAccounts&token=' + encodeURIComponent(token), {
+      method:'get',
+      muteHttpExceptions:true
+    });
     var data = JSON.parse(response.getContentText());
     if (!data.ok) return {ok:false,error:data.error || 'Central rechazó getAccounts'};
     return {ok:true,accounts:Array.isArray(data.accounts)?data.accounts:[]};
-  } catch (e) { return {ok:false,error:String(e && e.message || e)}; }
+  } catch (e) {
+    return {ok:false,error:String(e && e.message || e)};
+  }
 }
 
 function centralApiPost_(token, payload) {
@@ -368,7 +486,9 @@ function centralApiPost_(token, payload) {
     var data = JSON.parse(response.getContentText());
     if (!data.ok) return {ok:false,error:data.error || data.message || 'Central rechazó la operación'};
     return data;
-  } catch (e) { return {ok:false,error:String(e && e.message || e)}; }
+  } catch (e) {
+    return {ok:false,error:String(e && e.message || e)};
+  }
 }
 
 function centralFindAccount_(accounts, id) {
@@ -379,66 +499,3 @@ function centralFindAccount_(accounts, id) {
 function centralRound_(value) {
   return Math.round(num_(value) * 100) / 100;
 }
-
-/* V3.2 · Spark Celeste como remanente de seguros + resumen para UI */
-var _centralDesiredItemsV32_ = centralDesiredItems_;
-centralDesiredItems_ = function(model, mappings) {
-  var out = _centralDesiredItemsV32_(model, mappings);
-  var insurance = model.accounts.find(function(a){return a.id === 'seguros';});
-  var assignedInsurance = insurance ? centralRound_(insurance.assigned) : 0;
-  var alreadyMapped = out.filter(function(x){return x.cuentaId === 'seguros';}).reduce(function(sum,x){return sum + num_(x.desiredAmount);},0);
-  var excess = centralRound_(Math.max(0, assignedInsurance - alreadyMapped));
-  var excessMap = mappings.find(function(m){
-    return String(m.CuentaID || '') === 'seguros' && String(m.Modo || '').toUpperCase() === 'INSURANCE_EXCESS';
-  });
-  if (excessMap && excess > 0.005) {
-    out.push({
-      syncKey:String(excessMap.SyncKey || 'seguro_sparkceleste'),
-      cuentaId:'seguros',
-      vehicleId:'',
-      desiredAmount:excess,
-      map:excessMap
-    });
-  }
-  return out;
-};
-
-var _centralSyncCurrentWeekV32_ = syncCentralCurrentWeek_;
-syncCentralCurrentWeek_ = function(device) {
-  var result = _centralSyncCurrentWeekV32_(device);
-  if (!result || !Array.isArray(result.results)) return result;
-  var moved = result.results.filter(function(r){return r.status === 'OK' && Math.abs(num_(r.delta)) > 0.005;}).map(function(r){
-    var delta = centralRound_(r.delta), after = centralRound_(r.newBalance), before = centralRound_(after - delta);
-    return {
-      syncKey:String(r.syncKey || ''),
-      centralAccountId:String(r.centralAccountId || ''),
-      beforeBalance:before,
-      delta:delta,
-      afterBalance:after
-    };
-  });
-  result.moved = moved;
-  result.totalAdded = centralRound_(moved.reduce(function(sum,r){return sum + Math.max(0,num_(r.delta));},0));
-  result.totalRemoved = centralRound_(moved.reduce(function(sum,r){return sum + Math.max(0,-num_(r.delta));},0));
-  result.totalNet = centralRound_(moved.reduce(function(sum,r){return sum + num_(r.delta);},0));
-  return result;
-};
-
-// Reemplaza los wrappers iniciales para devolver el detalle de Central al navegador.
-markPayment_ = function(body, device) {
-  var result = _centralBaseMarkPayment_(body, device);
-  if (result && result.ok) result.centralSync = syncCentralCurrentWeekSafe_(device);
-  return result;
-};
-
-unmarkPayment_ = function(body, device) {
-  var result = _centralBaseUnmarkPayment_(body, device);
-  if (result && result.ok) result.centralSync = syncCentralCurrentWeekSafe_(device);
-  return result;
-};
-
-saveUberWeek_ = function(body, device) {
-  var result = _centralBaseSaveUberWeek_(body, device);
-  if (result && result.ok) result.centralSync = syncCentralCurrentWeekSafe_(device);
-  return result;
-};
