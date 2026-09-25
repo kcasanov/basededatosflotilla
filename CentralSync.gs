@@ -239,7 +239,7 @@ function centralBuildCurrentWeekModel_(weekDate) {
 
   var priorityRank = {CRITICA:0, MEDIA:1, BAJA:2};
   var regular = accounts.filter(function(a){return a.type !== 'REMANENTE';}).sort(function(a,b){
-    return (priorityRank[a.priority] == null ? 2 : priorityRank[a.priority]) - (priorityRank[b.priority] == null ? 2 : priorityRank[a.priority]) || a.order - b.order;
+    return (priorityRank[a.priority] == null ? 2 : priorityRank[a.priority]) - (priorityRank[b.priority] == null ? 2 : priorityRank[b.priority]) || a.order - b.order;
   });
   var remaining = available;
   regular.forEach(function(a) { a.assigned = Math.min(a.need, remaining); remaining -= a.assigned; });
