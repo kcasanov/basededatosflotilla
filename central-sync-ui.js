@@ -220,3 +220,55 @@ window.showCentralSyncSummaryV33 = showCentralSyncSummaryV33;
 window.showCentralSyncWarningV33 = showCentralSyncWarningV33;
 window.showGlobalLoaderV33 = showGlobalLoaderV33;
 window.hideGlobalLoaderV33 = hideGlobalLoaderV33;
+
+/* V3.3.1 · La barra cubre también la recarga posterior y F5 reutiliza la sesión de la pestaña. */
+const loadProductionDataBaseV331 = loadProductionData;
+loadProductionData = async function() {
+  const hasSession = !!sessionStorage.getItem(SESSION_KEY);
+  if (hasSession) showGlobalLoaderV33('Actualizando datos…');
+  try {
+    return await loadProductionDataBaseV331();
+  } finally {
+    if (hasSession) hideGlobalLoaderV33();
+  }
+};
+
+function waitV331(ms) { return new Promise(resolve => setTimeout(resolve, ms)); }
+
+validateExistingSession = async function() {
+  const token = sessionStorage.getItem(SESSION_KEY);
+  if (!token) return false;
+
+  authMsg('Restaurando sesión…', true);
+  const delays = [0, 350, 900];
+  for (let i = 0; i < delays.length; i++) {
+    if (delays[i]) await waitV331(delays[i]);
+    try {
+      const r = await backendBaseV33('validateSession', { sessionToken: token });
+      if (r && r.ok) {
+        try {
+          await loadProductionData();
+          unlockApp();
+          return true;
+        } catch (loadError) {
+          if (i === delays.length - 1) {
+            authMsg('La sesión sigue activa, pero los datos tardaron en cargar. Recargá la página para reintentar.', false);
+            return false;
+          }
+          continue;
+        }
+      }
+      // Solo una respuesta explícita del backend invalida la sesión.
+      sessionStorage.removeItem(SESSION_KEY);
+      authMsg('La sesión terminó. Ingresá el PIN nuevamente.', false);
+      return false;
+    } catch (networkError) {
+      // Un 502/504 o un fallo temporal no debe borrar una sesión válida.
+      if (i === delays.length - 1) {
+        authMsg('No pude validar la sesión por un problema temporal de conexión. Tu sesión se conserva; recargá para reintentar.', false);
+        return false;
+      }
+    }
+  }
+  return false;
+};
