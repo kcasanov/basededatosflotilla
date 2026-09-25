@@ -1,6 +1,6 @@
 'use strict';
 
-/* V3.3.2 · Sesión estable + una sola lectura bootstrap por ciclo */
+/* V3.3.3 · Sesión estable + una sola lectura bootstrap + estados de gasto claros */
 (() => {
   const backendBeforeV332 = backend;
   let bootstrapCacheV332 = null;
@@ -106,6 +106,22 @@
       $('loginButton').disabled = false;
       if (typeof hideGlobalLoaderV33 === 'function') hideGlobalLoaderV33(true);
     }
+  };
+
+  // Un gasto con necesidad ₡0 no está "pagado": simplemente no corresponde
+  // esa semana. Esto es especialmente importante para Cuentas casa en el 5.º martes.
+  const renderExpenseAllocationBeforeV333 = renderExpenseAllocation;
+  renderExpenseAllocation = function(expenses, available) {
+    renderExpenseAllocationBeforeV333(expenses, available);
+    const renderedRows = Array.from(document.querySelectorAll('#expenseBody tr'));
+    expenses.forEach((expense, index) => {
+      if (!expense || expense.type === 'remainder' || Number(expense.need || 0) > 0.01) return;
+      const row = renderedRows[index];
+      if (!row) return;
+      const cells = row.querySelectorAll('td');
+      if (cells.length < 6) return;
+      cells[5].textContent = '⚪ No corresponde esta semana';
+    });
   };
 
   // Vuelve a enlazar los controles con la versión estable. Este script carga
