@@ -1,5 +1,5 @@
 [build]
-  command = "mkdir -p dist && cp index.html app.js app-v3.js central-sync-ui.js dist/ && sed -i 's/Administración personal · V3.1/Administración personal · V3.3/g' dist/index.html && sed -i 's#</body>#<script src=\"./central-sync-ui.js?v=3.3\"></script></body>#' dist/index.html"
+  command = "mkdir -p dist && cp index.html app.js app-v3.js central-sync-ui.js dist/ && sed -i 's/Administración personal · V3.1/Administración personal · V3.3.1/g' dist/index.html && sed -i 's#</body>#<script src=\"./central-sync-ui.js?v=3.3.1\"></script></body>#' dist/index.html"
   publish = "dist"
 
 [functions]
