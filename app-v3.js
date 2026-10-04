@@ -893,6 +893,12 @@ async function reverseMovement(id) {
     const r=await backend('unmarkPayment',{sessionToken:sessionStorage.getItem(SESSION_KEY),pagoId:id});
     if(!r.ok)throw new Error(r.message || 'No se pudo reversar');
     await loadProductionData(); await loadPlanDashboardV3(true); renderAll();
+    if(r.globalAdjustment?.ok===false){
+      const detail=(r.globalAdjustment.errors||[]).map(x=>x.cuentaId+': '+x.message).join('\n');
+      alert((r.warning||'El pago se reversó, pero quedó pendiente revisar el archivo global.')+(detail?'\n\n'+detail:''));
+    }else if(Number(r.globalAdjustment?.totalRemoved||0)>0){
+      alert('Pago reversado. También se descontaron '+money(r.globalAdjustment.totalRemoved)+' de los aportes autorizados del archivo global.');
+    }
   }catch(e){alert(e.message);}
 }
 document.addEventListener('DOMContentLoaded',()=>{
