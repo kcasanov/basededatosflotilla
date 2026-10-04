@@ -83,6 +83,19 @@ function paymentKey(vehicleId, scheduledDate) { return vehicleId + '|' + schedul
 function getPaymentState(vehicleId, scheduledDate) {
   return paymentState[paymentKey(vehicleId, scheduledDate)] || { received: 0, realDate: '', status: 'Pendiente', pagoId: '' };
 }
+function receivedCashForWeek(tuesday = weekDate()) {
+  const monday = new Date(tuesday), sunday = new Date(tuesday);
+  monday.setUTCDate(monday.getUTCDate() - 1);
+  sunday.setUTCDate(sunday.getUTCDate() + 5);
+  const start = isoDate(monday), end = isoDate(sunday);
+  return Object.values(paymentState).reduce((total, state) => {
+    const movements = state.movements?.length ? state.movements : [{date:state.realDate,amount:state.received}];
+    return total + movements.reduce((sum, movement) => {
+      const date = normalizeSheetDate(movement.date);
+      return sum + (date >= start && date <= end ? Number(movement.amount || 0) : 0);
+    }, 0);
+  }, 0);
+}
 
 function isPendingStatus(value) {
   return ['PENDIENTE','PARCIAL','CERRADA_PENDIENTE'].includes(String(value || '').trim().toUpperCase());
@@ -367,7 +380,7 @@ function renderWeek() {
 
   const rows = rowsForCurrentWeek();
   const expected = rows.reduce((s, r) => s + r.amount, 0);
-  const received = rows.reduce((s, r) => s + r.received, 0);
+  const received = receivedCashForWeek(d);
   const lateRows = getLateRows();
   const late = lateRows.reduce((s, r) => s + r.missing, 0);
   const pending = rows.reduce((s,r)=>s+(r.historicalApplied?0:Math.max(0,r.amount-r.received)),0) + late;
@@ -429,7 +442,7 @@ async function unmarkPaid(encodedKey) {
 }
 function distributeCurrentWeek() {
   const rows = rowsForCurrentWeek();
-  const received = rows.reduce((s, r) => s + r.received, 0);
+  const received = receivedCashForWeek(weekDate());
   renderExpenseAllocation(allocateExpenses(currentExpenses(rows, weekDate()), received), received);
 }
 function openLatePayment(i) {
@@ -660,7 +673,7 @@ function monthProjectionSummary() {
   const d = weekDate(); return projectMonth(d.getUTCFullYear(), d.getUTCMonth(), 0, 0);
 }
 function renderSummary() {
-  const rows = rowsForCurrentWeek(), expected = rows.reduce((s, r) => s + r.amount, 0), received = rows.reduce((s, r) => s + r.received, 0), lateRows = getLateRows(), late = lateRows.reduce((s, r) => s + r.missing, 0);
+  const rows = rowsForCurrentWeek(), expected = rows.reduce((s, r) => s + r.amount, 0), received = receivedCashForWeek(weekDate()), lateRows = getLateRows(), late = lateRows.reduce((s, r) => s + r.missing, 0);
   $('sumWeekExpected').textContent = money(expected); $('sumWeekReceived').textContent = money(received); $('sumLate').textContent = money(late);
   const wd = weekDate(), weekStart = new Date(wd), weekEnd = new Date(wd); weekStart.setUTCDate(wd.getUTCDate() - 1); weekEnd.setUTCDate(wd.getUTCDate() + 5);
   const fmtLong = new Intl.DateTimeFormat('es-CR', { day: '2-digit', month: 'long', year: 'numeric', timeZone: 'UTC' });

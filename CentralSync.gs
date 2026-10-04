@@ -219,6 +219,7 @@ function centralBuildWeekModel_(weekDate) {
   });
   var plans = sheetObjects_(ss.getSheetByName('Plan_Pagos'));
   var weekStart = new Date(weekDate + 'T00:00:00Z');
+  weekStart.setUTCDate(weekStart.getUTCDate() - 1);
   var weekEnd = new Date(weekStart.getTime());
   weekEnd.setUTCDate(weekEnd.getUTCDate() + 6);
   var rows = [];
@@ -276,7 +277,7 @@ function centralBuildWeekModel_(weekDate) {
   });
 
   rows.forEach(function(r) { r.received = sumReceived_(ss, r.vehicleId, r.date); });
-  var available = rows.reduce(function(sum,r) { return sum + num_(r.received); }, 0);
+  var available = centralCashReceivedForWeek_(sheetObjects_(ss.getSheetByName('Pagos_Reales')), Utilities.formatDate(weekStart,'UTC','yyyy-MM-dd'), Utilities.formatDate(weekEnd,'UTC','yyyy-MM-dd'));
   var automaticIVA = rows.reduce(function(sum,r) { return sum + num_(r.iva); }, 0);
   var automaticInsurance = rows.reduce(function(sum,r) { return sum + num_(r.insurance); }, 0);
 
@@ -289,7 +290,7 @@ function centralBuildWeekModel_(weekDate) {
     var need = 0;
     if (id === 'iva') need = automaticIVA;
     else if (id === 'seguros') need = automaticInsurance;
-    else if (type === 'SEMANAL') need = (id === 'casa' && centralIsFifthTuesday_(weekStart)) ? 0 : num_(a.Monto);
+    else if (type === 'SEMANAL') need = (id === 'casa' && centralIsFifthTuesday_(new Date(weekDate + 'T00:00:00Z'))) ? 0 : num_(a.Monto);
     return {
       id:id,
       type:type,
@@ -318,6 +319,12 @@ function centralBuildWeekModel_(weekDate) {
   }
 
   return {weekDate:weekDate, rows:rows, accounts:accounts, available:available};
+}
+function centralCashReceivedForWeek_(payments,start,end) {
+  return payments.reduce(function(sum,p) {
+    var realDate = ymd_(p.FechaReal || p.CreatedAt);
+    return sum + (realDate >= start && realDate <= end ? num_(p.MontoRecibido) : 0);
+  },0);
 }
 
 function centralDesiredItems_(model, mappings) {

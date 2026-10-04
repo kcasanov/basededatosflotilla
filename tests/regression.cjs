@@ -28,6 +28,10 @@ eq(run("effectivePaymentState({vehicleId:'i10',date:'2026-06-09',amount:100}).re
 eq(run("getLateRows().map(r=>r.date)"),['2026-06-02'],'only explicitly pending');
 eq(run("paymentStatusV3({amount:100,received:0,historicalApplied:true}).pending"),0,'no phantom debt');
 eq(run("paymentStatusV3({amount:100,received:40}).pending"),60,'partial payment');
+run("paymentState['i10|2026-09-08']={received:40,movements:[{date:'2026-10-03',amount:40}]}; paymentState['i10|2026-09-29']={received:80,movements:[{date:'2026-10-04',amount:60},{date:'2026-10-05',amount:20}]};");
+eq(run("receivedCashForWeek(parseDate('2026-09-29'))"),100,'late payment funds week when cash arrives');
+eq(run("receivedCashForWeek(parseDate('2026-10-06'))"),20,'Monday receipt belongs to next operational week');
+run("delete paymentState['i10|2026-09-08']; delete paymentState['i10|2026-09-29'];");
 const dueRow = date => ({date,amount:100,received:0});
 for (const [today,expected] of [['2026-10-04',['2026-09-29']],['2026-10-06',['2026-09-29']],['2026-10-07',['2026-09-29','2026-10-06']]]) {
   eq(['2026-09-29','2026-10-06'].filter(date=>context.duePendingWeekV3(dueRow(date),today)),expected,'pending weeks start the day after Tuesday');
@@ -88,6 +92,9 @@ vm.runInContext(fs.readFileSync('Code.gs','utf8'),server);
 vm.runInContext(fs.readFileSync('CentralSync.gs','utf8'),server);
 eq(server.syncCentralCurrentWeek_('test','2026-09-29').disabled,true,'Central remains disabled');
 for (const [day,week] of [['2026-10-04','2026-09-29'],['2026-10-05','2026-10-06'],['2026-10-06','2026-10-06']]) eq(server.centralCurrentTuesday_(day),week,'Central uses operational week');
+const cashMovements=[{FechaProgramada:'2026-09-08',FechaReal:'2026-10-03',MontoRecibido:40},{FechaProgramada:'2026-09-29',FechaReal:'2026-10-04',MontoRecibido:60},{FechaProgramada:'2026-09-29',FechaReal:'2026-10-05',MontoRecibido:20}];
+eq(server.centralCashReceivedForWeek_(cashMovements,'2026-09-28','2026-10-04'),100,'Central includes late receipts in actual cash week');
+eq(server.centralCashReceivedForWeek_(cashMovements,'2026-10-05','2026-10-11'),20,'Central respects Monday boundary');
 scriptProps.set('FLOTILLA_TEST_MODE','TRUE');
 eq(server.centralApiGetAccounts_('test').ok,false,'test mode blocks Central reads');
 eq(server.centralApiPost_('test',{action:'updateBalance'}).ok,false,'test mode blocks Central writes');
