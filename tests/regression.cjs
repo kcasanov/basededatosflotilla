@@ -276,7 +276,7 @@ context.loadPlanDashboardV3(true).then(async()=>{
   eq(run("Object.keys(centralFundingSnapshot()).includes('pago_deudas')"),false,'debt remnant never prompts for Central');
   await context.offerCentralFunding({omoda:{ready:false}});
   eq(run("centralCalls.map(x=>[x.action,x.payload.cuentaId,x.payload.weekDate])"),[['syncGlobalAccount','casa','2026-09-29'],['syncGlobalAccount','omoda','2026-09-29']],'confirmation submits each newly funded account to Drive');
-  eq(run("alerts.every(x=>x.includes('Cuenta actualizada en el archivo global de Drive.')&&x.includes('100.000')&&x.includes('125.000'))"),true,'Drive confirmation shows previous and new balances');
+  eq(run("alerts.every(x=>x.includes('Cuenta actualizada en el archivo global de Drive.')&&x.includes(money(100000))&&x.includes(money(125000)))"),true,'Drive confirmation shows previous and new balances');
   await context.offerCentralFunding({casa:{ready:true},omoda:{ready:true}});
   eq(run('centralCalls.length'),2,'already funded accounts do not prompt again');
   console.log(`${checks} regression checks passed; no external API was called.`);
