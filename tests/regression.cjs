@@ -28,10 +28,14 @@ eq(run("effectivePaymentState({vehicleId:'i10',date:'2026-06-09',amount:100}).re
 eq(run("getLateRows().map(r=>r.date)"),['2026-06-02'],'only explicitly pending');
 eq(run("paymentStatusV3({amount:100,received:0,historicalApplied:true}).pending"),0,'no phantom debt');
 eq(run("paymentStatusV3({amount:100,received:40}).pending"),60,'partial payment');
-run("paymentState['i10|2026-09-08']={received:40,movements:[{date:'2026-10-03',amount:40}]}; paymentState['i10|2026-09-29']={received:80,movements:[{date:'2026-10-04',amount:60},{date:'2026-10-05',amount:20}]};");
-eq(run("receivedCashForWeek(parseDate('2026-09-29'))"),100,'late payment funds week when cash arrives');
-eq(run("receivedCashForWeek(parseDate('2026-10-06'))"),20,'Monday receipt belongs to next operational week');
-run("delete paymentState['i10|2026-09-08']; delete paymentState['i10|2026-09-29'];");
+run("paymentState['i10|2026-09-08']={received:40,movements:[{date:'2026-10-03',amount:40}]}; paymentState['i10|2026-09-29']={received:80,movements:[{date:'2026-10-04',amount:60},{date:'2026-10-05',amount:20}]}; paymentState['i10|2026-10-06']={received:80,movements:[{date:'2026-10-04',amount:80}]}; paymentState['i10|2026-06-10']={received:90,movements:[{date:'2026-10-04',amount:90}]};");
+eq(run("cashAllocationForWeek(parseDate('2026-09-09'))"),{operational:40,debtRecovery:0,total:40},'recent late payment stays with its scheduled week');
+eq(run("cashAllocationForWeek(parseDate('2026-09-29'))"),{operational:80,debtRecovery:90,total:170},'scheduled-week cash plus old debt recovery are separated');
+eq(run("cashAllocationForWeek(parseDate('2026-10-06'))"),{operational:80,debtRecovery:0,total:80},'advance payment funds the future scheduled week');
+eq(run("allocateExpenses([{id:'iva',type:'weekly',need:50,assigned:0,priority:'critical',order:1},{id:'pago_deudas',type:'remainder',need:0,assigned:0,priority:'low',order:2}],80,90).map(x=>[x.id,x.assigned])"),[['iva',50],['pago_deudas',120]],'old recovery bypasses priorities and goes directly to debt');
+eq(run("paymentDistributionForMovement('2026-09-04','2026-10-04').debtRecovery"),false,'exactly one calendar month old is not old recovery');
+eq(run("paymentDistributionForMovement('2026-09-03','2026-10-04').debtRecovery"),true,'older than one calendar month becomes debt recovery');
+run("delete paymentState['i10|2026-09-08']; delete paymentState['i10|2026-09-29']; delete paymentState['i10|2026-10-06']; delete paymentState['i10|2026-06-10'];");
 const dueRow = date => ({date,amount:100,received:0});
 for (const [today,expected] of [['2026-10-04',['2026-09-29']],['2026-10-06',['2026-09-29']],['2026-10-07',['2026-09-29','2026-10-06']]]) {
   eq(['2026-09-29','2026-10-06'].filter(date=>context.duePendingWeekV3(dueRow(date),today)),expected,'pending weeks start the day after Tuesday');
@@ -117,9 +121,12 @@ for (const [amount,rounded] of [[0,0],[1,500],[500,500],[500.01,1000],[12287,125
   eq(server.centralRoundUp500_(amount),rounded,'Central rounds contributions upward to 500 colones');
 }
 for (const [day,week] of [['2026-10-04','2026-09-29'],['2026-10-05','2026-10-06'],['2026-10-06','2026-10-06']]) eq(server.centralCurrentTuesday_(day),week,'Central uses operational week');
-const cashMovements=[{FechaProgramada:'2026-09-08',FechaReal:'2026-10-03',MontoRecibido:40},{FechaProgramada:'2026-09-29',FechaReal:'2026-10-04',MontoRecibido:60},{FechaProgramada:'2026-09-29',FechaReal:'2026-10-05',MontoRecibido:20}];
-eq(server.centralCashReceivedForWeek_(cashMovements,'2026-09-28','2026-10-04'),100,'Central includes late receipts in actual cash week');
-eq(server.centralCashReceivedForWeek_(cashMovements,'2026-10-05','2026-10-11'),20,'Central respects Monday boundary');
+const cashMovements=[{FechaProgramada:'2026-09-08',FechaReal:'2026-10-03',MontoRecibido:40},{FechaProgramada:'2026-09-29',FechaReal:'2026-10-04',MontoRecibido:60},{FechaProgramada:'2026-09-29',FechaReal:'2026-10-05',MontoRecibido:20},{FechaProgramada:'2026-10-06',FechaReal:'2026-10-04',MontoRecibido:80},{FechaProgramada:'2026-06-10',FechaReal:'2026-10-04',MontoRecibido:90}];
+eq(server.centralCashAllocationForWeek_(cashMovements,'2026-09-09'),{operational:40,debtRecovery:0,total:40},'backend keeps recent late cash with scheduled week');
+eq(server.centralCashAllocationForWeek_(cashMovements,'2026-09-29'),{operational:80,debtRecovery:90,total:170},'backend separates old recovery from operational cash');
+eq(server.centralCashAllocationForWeek_(cashMovements,'2026-10-06'),{operational:80,debtRecovery:0,total:80},'backend assigns advance payment to future scheduled week');
+eq(server.centralPaymentDistribution_('2026-09-04','2026-10-04').debtRecovery,false,'backend one-month boundary inclusive');
+eq(server.centralPaymentDistribution_('2026-09-03','2026-10-04').debtRecovery,true,'backend older than one calendar month routes to debt');
 scriptProps.set('FLOTILLA_TEST_MODE','TRUE');
 eq(server.globalSyncReady_(),false,'test mode leaves Drive writes disabled by default');
 assert.throws(()=>server.globalSpreadsheetId_(),/copia distinta/); checks++;
@@ -253,8 +260,11 @@ syncNeed=0;syncBalance=150000;syncPosts=0;syncOperation=null;
 syncState={DesiredAmount:50000,SyncedAmount:50000,Delta:50000,Status:'OK',OperationID:'prior',BeforeBalance:100000,TargetBalance:150000};
 syncTest.centralCurrentTuesday_=()=> '2026-09-29';
 syncTest.centralSyncedAccountIdsForWeek_=()=>['omoda'];
-const reversalReconcile=syncTest.reconcileGlobalAfterPaymentReversal_('test','2026-10-03',false);
+syncTest.centralPaymentDistribution_=()=>({weekDate:'2026-09-29',debtRecovery:false});
+const reversalReconcile=syncTest.reconcileGlobalAfterPaymentReversal_('test','2026-09-29','2026-10-03',false);
 eq([reversalReconcile.ok,reversalReconcile.weekDate,reversalReconcile.totalRemoved,syncBalance],[true,'2026-09-29',50000,100000],'payment reversal reconciles already-authorized global funding');
+syncTest.centralPaymentDistribution_=()=>({weekDate:'2026-09-29',debtRecovery:true});
+eq(syncTest.reconcileGlobalAfterPaymentReversal_('test','2026-06-10','2026-10-03',false).debtRecovery,true,'old debt recovery reversal skips global accounts');
 eq(syncTest.syncCentralCurrentWeek_('test','2026-09-29').ok,false,'Central refuses unconfirmed bulk sync');
 run("planDashboardV3=[];planDashboardLoadedV3=false;globalThis.planRenders=0;backend=async action=>({ok:true,cards:[{vehicleId:'i10',integrationActive:true,legacyPending:[{date:'2026-06-02',quota:100,week:1}]}]});renderWeek=()=>planRenders++;renderSummary=()=>planRenders++;renderVehicles=()=>planRenders++;");
 context.loadPlanDashboardV3(true).then(async()=>{
