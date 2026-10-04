@@ -42,6 +42,9 @@ function paymentStatusV3(row) {
   const pending = row.historicalApplied ? 0 : Math.max(0, Number(row.amount || 0) - Number(row.received || 0));
   return { pending, paid: pending <= .01, partial: Number(row.received || 0) > 0 && pending > .01 };
 }
+function duePendingWeekV3(row, today = isoDate(crTodayUTC())) {
+  return row.date < today && paymentStatusV3(row).pending > .01;
+}
 
 // Une atrasos históricos del Plan de pagos con los atrasos nacidos en esta app.
 const getLateRowsV22 = getLateRows;
@@ -191,7 +194,7 @@ function renderUberV3() {
   const vehicles = contractVehicles.filter(v => !['FINALIZADO','CANCELADO'].includes(v.operationStatus || 'ACTIVO'));
   if (!vehicles.length) { box.innerHTML = '<div class="placeholder">No hay vehículos activos.</div>'; return; }
   box.innerHTML = vehicles.map(v => {
-    const open = openPaymentRowsV3(v.id), pending = open.filter(r => paymentStatusV3(r).pending > .01), pendingAmt = pending.reduce((s,r)=>s+paymentStatusV3(r).pending,0), dash = dashboardCardV3(v.id);
+    const open = openPaymentRowsV3(v.id), pending = open.filter(r => duePendingWeekV3(r)), pendingAmt = pending.reduce((s,r)=>s+paymentStatusV3(r).pending,0), dash = dashboardCardV3(v.id);
     const type = v.paymentType || 'SIN_CONFIGURAR', isUber = type === 'UBER';
     return `<article class="vehicleControlCard ${isUber ? 'uberCard' : 'personalCard'}" id="controlCard_${safeIdV3(v.id)}">
       <button class="vehicleCardHead" onclick="toggleVehicleCardV3('${v.id}')">
@@ -205,11 +208,12 @@ function renderUberV3() {
   }).join('');
 }
 function personalBodyV3(v, rows) {
-  const pending = rows.filter(r => paymentStatusV3(r).pending > .01);
+  const pending = rows.filter(r => duePendingWeekV3(r));
   return `<div class="personalCompact"><div class="note">Uso personal: no se muestra el cuadro de Uber.</div>${pending.length ? pending.map(r=>`<div class="pendingWeekLine"><span>${fmtShort(r.date)} · cuota ${money(r.amount)}</span><b>Pendiente ${money(paymentStatusV3(r).pending)}</b><button class="light miniBtn" onclick="jumpToWeekV3('${r.date}')">Ver semana</button></div>`).join('') : '<div class="placeholder smallPlaceholder">No hay semanas pendientes.</div>'}</div>`;
 }
 function uberBodyV3(v, dash, rows) {
   const currentDate=isoDate(operationalTuesday()),saved=uberWeeksV3.find(u=>u.vehicleId===v.id&&u.date===currentDate),carry=uberCarryV3(v,currentDate);
+  const pendingWeeks = rows.filter(r => duePendingWeekV3(r));
   const summary=[['Semana #',uberWeekNumberV3(v,currentDate)+' · '+fmtShort(currentDate)],['Ganancias Totales',saved?money(saved.gains):'—'],['Reembolsos',money(saved?saved.reimbursements:carry)],['Efectivo',saved?money(saved.cash):'—'],['Cuota',money(saved?.quota || v.weekly)],['Saldo Semana',saved?money(saved.balance):'—']];
   const targetRows = [...new Map([...rows, ...rowsForTuesday(operationalTuesday()).filter(r=>r.vehicleId===v.id), ...uberWeeksV3.filter(u=>u.vehicleId===v.id).map(u=>({date:u.date,amount:u.quota,received:getPaymentState(v.id,u.date).received}))].map(r=>[r.date,r])).values()].sort((a,b)=>a.date.localeCompare(b.date));
   const currentWeekIso = isoDate(operationalTuesday());
@@ -236,7 +240,7 @@ function uberBodyV3(v, dash, rows) {
       <div class="actions"><button class="dark" onclick="saveUberWeekV3('${v.id}')">Guardar semana Uber</button></div>
     </div>
   </div>
-  <div class="pendingWeeks"><h3>Semanas Uber registradas</h3>${uberWeeksV3.filter(u=>u.vehicleId===v.id).sort((a,b)=>b.date.localeCompare(a.date)).map(u=>`<div class="movementRow"><span>Semana ${u.week} · ${fmtShort(u.date)}</span><b>${escapeHtmlV3(u.status)}</b></div>`).join('')}<h3>Semanas pendientes</h3>${rows.filter(r=>paymentStatusV3(r).pending>.01).length ? rows.filter(r=>paymentStatusV3(r).pending>.01).map(r=>`<div class="pendingWeekLine"><span>${fmtShort(r.date)} · ${money(r.received)} de ${money(r.amount)}</span><b>${money(paymentStatusV3(r).pending)} pendiente</b><button class="light miniBtn" onclick="jumpToWeekV3('${r.date}')">Ver</button></div>`).join('') : '<div class="placeholder smallPlaceholder">Sin semanas pendientes.</div>'}</div>`;
+  <div class="pendingWeeks"><h3>Semanas Uber registradas</h3>${uberWeeksV3.filter(u=>u.vehicleId===v.id).sort((a,b)=>b.date.localeCompare(a.date)).map(u=>`<div class="movementRow"><span>Semana ${u.week} · ${fmtShort(u.date)}</span><b>${escapeHtmlV3(u.status)}</b></div>`).join('')}<h3>Semanas pendientes</h3>${pendingWeeks.length ? pendingWeeks.map(r=>`<div class="pendingWeekLine"><span>${fmtShort(r.date)} · ${money(r.received)} de ${money(r.amount)}</span><b>${money(paymentStatusV3(r).pending)} pendiente</b><button class="light miniBtn" onclick="jumpToWeekV3('${r.date}')">Ver</button></div>`).join('') : '<div class="placeholder smallPlaceholder">Sin semanas pendientes.</div>'}</div>`;
 }
 function toggleVehicleCardV3(vehicleId) {
   const body = document.querySelector(`[data-card-body="${CSS.escape(vehicleId)}"]`); if (body) body.classList.toggle('collapsed');

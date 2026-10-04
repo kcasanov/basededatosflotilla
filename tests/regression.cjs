@@ -28,6 +28,10 @@ eq(run("effectivePaymentState({vehicleId:'i10',date:'2026-06-09',amount:100}).re
 eq(run("getLateRows().map(r=>r.date)"),['2026-06-02'],'only explicitly pending');
 eq(run("paymentStatusV3({amount:100,received:0,historicalApplied:true}).pending"),0,'no phantom debt');
 eq(run("paymentStatusV3({amount:100,received:40}).pending"),60,'partial payment');
+const dueRow = date => ({date,amount:100,received:0});
+for (const [today,expected] of [['2026-10-04',['2026-09-29']],['2026-10-06',['2026-09-29']],['2026-10-07',['2026-09-29','2026-10-06']]]) {
+  eq(['2026-09-29','2026-10-06'].filter(date=>context.duePendingWeekV3(dueRow(date),today)),expected,'pending weeks start the day after Tuesday');
+}
 for(const [raw,value] of [['₡123.456,78',123456.78],['123,456.78',123456.78],['₡123.456',123456],['− 1 234,50',-1234.5],['0',0]])eq(run(`parseCRAmountV3(${JSON.stringify(raw)})`),value,'OCR currency');
 eq(context.parseUberOCRV3('Ganancias totales ₡123.456,78\nDevoluciones y gastos\n₡1.000\nAjustes períodos anteriores -500,00\nGanancias netas 103.956,78\nEfectivo cobrado ₡20.000'),{gains:123456.78,returns:1000,adjustments:-500,cash:20000},'OCR labels');
 eq(run("parseUberOCRV3('Ganancias netas 90.000').cash"),null,'net gains are not cash');
@@ -80,6 +84,9 @@ const external=new Sheet([['Semana',777],['Ganancias',0],['Reembolsos',0],['Efec
 const main={getSheetByName:n=>mainSheets[n]};
 const server=vm.createContext({console,Date,JSON,Number,isFinite,SpreadsheetApp:{openById:id=>id==='main'?main:{getSheetByName:()=>external},flush(){}},Utilities:{formatDate:d=>new Date(d).toISOString().slice(0,10),getUuid:()=>String(++uuid)}});
 vm.runInContext(fs.readFileSync('Code.gs','utf8'),server);
+for (const [today,expected] of [['2026-10-04',['2026-09-29']],['2026-10-06',['2026-09-29']],['2026-10-07',['2026-09-29','2026-10-06']]]) {
+  eq(server.pendingDueObligations_([{date:'2026-09-29',state:'Pendiente'},{date:'2026-10-06',state:'Pendiente'},{date:'2026-09-22',state:'Pagado'}],today).map(r=>r.date),expected,'backend sends only due pending weeks');
+}
 vm.runInContext("vehicleObjectById_=()=>vehicle;planSpreadsheetId_=()=> 'external';operationalTuesday_=()=> '2026-09-29';",server);
 server.vehicle=vehicle;
 // Keep sheet access identifiers independent of production spreadsheet IDs.

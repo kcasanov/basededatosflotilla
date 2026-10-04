@@ -219,10 +219,13 @@ function legacyObligationsTo_(sh,targetDate){
   values.forEach((r,i)=>{const date=ymd_(r[dateIdx]);if(!date||date>targetDate)return;out.push({row:i+9,week:num_(r[weekIdx]),date:date,amount:quotaIdx>=0?num_(r[quotaIdx]):0,state:stateIdx>=0?String(r[stateIdx]||''):''});});
   return out.sort((a,b)=>a.date.localeCompare(b.date));
 }
+function pendingDueObligations_(rows,todayIso){
+  return rows.filter(r=>pendingStatus_(r.state)&&r.date<todayIso);
+}
 
 function getPlanDashboard_(){
   const main=SpreadsheetApp.openById(SPREADSHEET_ID),vehicles=sheetObjects_(main.getSheetByName('Vehiculos')).filter(v=>String(v.OperacionEstado||'ACTIVO').toUpperCase()==='ACTIVO');
-  const legacy=SpreadsheetApp.openById(planSpreadsheetId_()),today=new Date(),cards=[];
+  const legacy=SpreadsheetApp.openById(planSpreadsheetId_()),todayIso=Utilities.formatDate(new Date(),TZ,'yyyy-MM-dd'),cards=[];
   vehicles.forEach(v=>{
     const tab=String(v.PlanSheetTab||''),integration=bool_(v.PlanIntegracionActiva);
     const card={vehicleId:String(v.VehicleID||''),name:String(v.Nombre||''),plate:String(v.Placa||''),driver:String(v.Chofer||''),type:String(v.TipoCobro||''),planSheetTab:tab,integrationActive:integration,summary:[],legacyPending:[]};
@@ -230,8 +233,8 @@ function getPlanDashboard_(){
       const sh=legacy.getSheetByName(tab);
       if(sh){
         card.summary=sh.getRange(1,1,6,2).getDisplayValues();
-        const rows=legacyObligationsTo_(sh,Utilities.formatDate(new Date(today.getTime()+7*86400000),TZ,'yyyy-MM-dd'));
-        card.legacyPending=rows.filter(r=>pendingStatus_(r.state)&&new Date(r.date+'T00:00:00')<=new Date(today.getTime()+7*86400000)).map(r=>({row:r.row,week:r.week,date:r.date,state:r.state||'Pendiente',quota:r.amount}));
+        const rows=legacyObligationsTo_(sh,todayIso);
+        card.legacyPending=pendingDueObligations_(rows,todayIso).map(r=>({row:r.row,week:r.week,date:r.date,state:r.state||'Pendiente',quota:r.amount}));
       }
     }
     cards.push(card);
