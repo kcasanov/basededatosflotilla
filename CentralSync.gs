@@ -340,14 +340,30 @@ function centralDesiredItems_(model, mappings) {
         syncKey:String(map.SyncKey || cuentaId),
         cuentaId:cuentaId,
         vehicleId:'',
-        desiredAmount:num_(expense.assigned),
+        desiredAmount:centralFullyFunded_(expense) ? num_(expense.need) : 0,
         map:map
       });
     }
   });
 
+  // Golpes/préstamos es el remanente: cada asignación positiva puede abonarse.
+  // Sin una fila explícita en Central_Map no se supone una cuenta de destino.
+  var debt = model.accounts.find(function(a){return a.id === 'pago_deudas';});
+  var debtMap = mappings.find(function(m){
+    return String(m.CuentaID || '') === 'pago_deudas' && !String(m.VehicleID || '');
+  });
+  if (debt && debtMap) {
+    out.push({
+      syncKey:String(debtMap.SyncKey || 'pago_deudas'),
+      cuentaId:'pago_deudas',
+      vehicleId:'',
+      desiredAmount:Math.max(0,num_(debt.assigned)),
+      map:debtMap
+    });
+  }
+
   var insurance = model.accounts.find(function(a){return a.id === 'seguros';});
-  var assignedInsurance = insurance ? num_(insurance.assigned) : 0;
+  var assignedInsurance = centralFullyFunded_(insurance) ? num_(insurance.need) : 0;
   var totalInsurance = model.rows.reduce(function(sum,r){return sum + num_(r.insurance);},0);
   if (totalInsurance <= 0) return out;
 
@@ -387,6 +403,11 @@ function centralDesiredItems_(model, mappings) {
   }
 
   return out;
+}
+
+function centralFullyFunded_(account) {
+  return !!account && num_(account.need) > 0.005 &&
+    num_(account.assigned) >= num_(account.need) - 0.005;
 }
 
 function centralDefaultInsurance_(vehicle) {
