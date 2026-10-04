@@ -53,8 +53,13 @@ function previousOrSameTuesday(date) {
   d.setUTCDate(d.getUTCDate() - sub);
   return d;
 }
+function operationalTuesday(date = crTodayUTC()) {
+  const d = new Date(date);
+  d.setUTCDate(d.getUTCDate() - (d.getUTCDay() + 6) % 7 + 1);
+  return d;
+}
 function weekDate() {
-  const base = nextOrSameTuesday(crTodayUTC());
+  const base = operationalTuesday();
   base.setUTCDate(base.getUTCDate() + weekOffset * 7);
   return base;
 }
@@ -79,6 +84,18 @@ function getPaymentState(vehicleId, scheduledDate) {
   return paymentState[paymentKey(vehicleId, scheduledDate)] || { received: 0, realDate: '', status: 'Pendiente', pagoId: '' };
 }
 
+function isPendingStatus(value) {
+  return ['PENDIENTE','PARCIAL','CERRADA_PENDIENTE'].includes(String(value || '').trim().toUpperCase());
+}
+function effectivePaymentState(ev) {
+  const st = getPaymentState(ev.vehicleId, ev.date);
+  if (ev.date >= isoDate(operationalTuesday())) return st;
+  const explicit = planPayments.find(p => p.vehicleId === ev.vehicleId && p.date === ev.date);
+  const card = typeof planDashboardV3 !== 'undefined' && planDashboardV3.find(c => c.vehicleId === ev.vehicleId);
+  const listed = card && (card.legacyPending || []).some(p => normalizeSheetDate(p.date) === ev.date);
+  const pending = card && card.integrationActive ? listed : explicit && isPendingStatus(explicit.status);
+  return pending ? st : {...st, status: 'APLICADO', historicalApplied: true};
+}
 function getDeviceId() {
   let id = localStorage.getItem(DEVICE_KEY);
   if (!id) {
@@ -88,8 +105,10 @@ function getDeviceId() {
   return id;
 }
 async function backend(action, payload = {}) {
+  if(action==='syncCentral')return {ok:true,disabled:true};
   const res = await fetch(BACKEND_URL, {
     method: 'POST',
+    signal: AbortSignal.timeout(45000),
     headers: { 'Content-Type': 'text/plain;charset=utf-8' },
     body: JSON.stringify({ action, deviceId: getDeviceId(), ...payload })
   });
@@ -163,7 +182,7 @@ async function loadProductionData() {
     capital: Number(p.Capital || 0),
     startBalance: Number(p.SaldoInicial || 0),
     endBalance: Number(p.SaldoFinal || 0),
-    status: String(p.EstadoPlan || 'Pendiente')
+    status: String(p.EstadoPlan || '')
   })).filter(p => p.vehicleId && p.date) : [];
 
   Object.keys(paymentState).forEach(k => delete paymentState[k]);
@@ -243,10 +262,11 @@ function allScheduledEventsBetween(start, end) {
   return contractVehicles.flatMap(v => scheduledEventsForVehicle(v, start, end)).sort((a, b) => a.date.localeCompare(b.date));
 }
 function rowsForTuesday(tuesday) {
-  const next = new Date(tuesday); next.setUTCDate(next.getUTCDate() + 6);
-  const events = allScheduledEventsBetween(tuesday, next);
+  const start = new Date(tuesday); start.setUTCDate(start.getUTCDate() - 1);
+  const next = new Date(tuesday); next.setUTCDate(next.getUTCDate() + 5);
+  const events = allScheduledEventsBetween(start, next);
   return events.map(ev => {
-    const st = getPaymentState(ev.vehicleId, ev.date);
+    const st = effectivePaymentState(ev);
     const visualDate = (contractVehicles.find(v => v.id === ev.vehicleId)?.frequency === 'QUINCENAL_15_FIN_MES') ? isoDate(tuesday) : ev.date;
     return {
       ...ev,
@@ -255,6 +275,7 @@ function rowsForTuesday(tuesday) {
       received: st.received,
       realDate: st.realDate,
       status: st.status,
+      historicalApplied: !!st.historicalApplied,
       pagoId: st.pagoId,
       key: paymentKey(ev.vehicleId, ev.date)
     };
@@ -273,8 +294,8 @@ function getLateRows() {
   const end = new Date(cutoff); end.setUTCDate(end.getUTCDate() - 1);
   if (end < start) return [];
   return allScheduledEventsBetween(start, end).map(ev => {
-    const st = getPaymentState(ev.vehicleId, ev.date);
-    const missing = Math.max(0, ev.amount - st.received);
+    const st = effectivePaymentState(ev);
+    const missing = st.historicalApplied ? 0 : Math.max(0, ev.amount - st.received);
     const weeksLate = Math.max(1, Math.ceil((cutoff - parseDate(ev.date)) / 604800000));
     return { ...ev, ...st, missing, weeksLate, key: paymentKey(ev.vehicleId, ev.date) };
   }).filter(r => r.missing > 0.01);
@@ -322,7 +343,8 @@ function renderExpenseAllocation(expenses, available) {
   $('allocGap').textContent = money(gap);
   $('allocGapNote').textContent = 'Gastos que todavía no logramos cubrir';
   $('allocIncoming').textContent = money(incoming);
-  $('expenseBody').innerHTML = expenses.map(e => {
+  const visibleExpenses=[...expenses].sort((a,b)=>priorityRank(a.priority)-priorityRank(b.priority)||Number(a.order||99)-Number(b.order||99));
+  $('expenseBody').innerHTML = visibleExpenses.map(e => {
     const falta = Math.max(0, e.need - e.assigned);
     let state = falta <= .01 ? '🟢 Completa' : e.assigned > 0 ? '🟡 Parcial' : (e.priority === 'critical' ? '🔴 Pendiente' : '⚪ Pendiente');
     if ((e.id === 'pago_deudas' || e.name === 'Pago de deudas') && incoming > 0) state = '🟡 Pendiente de completar';
@@ -348,7 +370,7 @@ function renderWeek() {
   const received = rows.reduce((s, r) => s + r.received, 0);
   const lateRows = getLateRows();
   const late = lateRows.reduce((s, r) => s + r.missing, 0);
-  const pending = Math.max(0, expected - received) + late;
+  const pending = rows.reduce((s,r)=>s+(r.historicalApplied?0:Math.max(0,r.amount-r.received)),0) + late;
 
   $('wkExpected').textContent = money(expected);
   $('wkReceived').textContent = money(received);
@@ -564,6 +586,7 @@ async function saveVehicle() {
     if (!r.ok) throw new Error(r.message || 'No se pudo guardar');
     s.textContent = `Guardado correctamente · ${r.planRows || 0} pagos creados.`; s.className = 'status ok';
     await loadProductionData(); renderAll();
+    window.refreshPlanInBackgroundV34?.();
   } catch (e) { s.textContent = e.message || 'Error al guardar.'; s.className = 'status bad'; }
 }
 function downloadQuoteJson() {
@@ -639,9 +662,9 @@ function monthProjectionSummary() {
 function renderSummary() {
   const rows = rowsForCurrentWeek(), expected = rows.reduce((s, r) => s + r.amount, 0), received = rows.reduce((s, r) => s + r.received, 0), lateRows = getLateRows(), late = lateRows.reduce((s, r) => s + r.missing, 0);
   $('sumWeekExpected').textContent = money(expected); $('sumWeekReceived').textContent = money(received); $('sumLate').textContent = money(late);
-  const wd = weekDate(), weekEnd = new Date(wd); weekEnd.setUTCDate(wd.getUTCDate() + 6);
+  const wd = weekDate(), weekStart = new Date(wd), weekEnd = new Date(wd); weekStart.setUTCDate(wd.getUTCDate() - 1); weekEnd.setUTCDate(wd.getUTCDate() + 5);
   const fmtLong = new Intl.DateTimeFormat('es-CR', { day: '2-digit', month: 'long', year: 'numeric', timeZone: 'UTC' });
-  $('sumWeekLabel').textContent = 'Semana de cobro · martes ' + fmtLong.format(wd); $('sumWeekPeriod').textContent = 'Periodo mostrado: ' + fmtLong.format(wd) + ' al ' + fmtLong.format(weekEnd);
+  $('sumWeekLabel').textContent = 'Semana de cobro · martes ' + fmtLong.format(wd); $('sumWeekPeriod').textContent = 'Periodo mostrado: ' + fmtLong.format(weekStart) + ' al ' + fmtLong.format(weekEnd);
   $('sumWeekRows').innerHTML = rows.length ? rows.map(r => `<div class="summaryRow"><span>${r.vehicle}</span><span>${r.received >= r.amount ? '🟢' : '🟡'} ${money(r.received)} / ${money(r.amount)}</span></div>`).join('') : '<div class="placeholder">No hay pagos programados.</div>';
   $('sumLateRows').innerHTML = lateRows.length ? lateRows.map(r => `<div class="lateItem"><div><b>${r.vehicle} · ${money(r.missing)}</b><div class="lateMeta">${r.weeksLate} semana${r.weeksLate === 1 ? '' : 's'} de atraso · ${fmtShort(r.date)}</div></div></div>`).join('') : '<div class="placeholder">No hay atrasos pendientes.</div>';
   const p = monthProjectionSummary();

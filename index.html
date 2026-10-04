@@ -129,6 +129,7 @@ body.dark #sumWeekRows:empty::after{
 .legacySummary{border:1px solid var(--l);border-radius:13px;overflow:hidden}.legacyRow{display:flex;justify-content:space-between;gap:16px;padding:11px 13px;border-bottom:1px solid var(--l);font-size:13px}.legacyRow:last-child{border-bottom:0}.legacyBalance{background:#f8fafc}.legacyRow b{color:var(--n)}
 .uberForm{background:#f8fafc;border:1px solid var(--l);border-radius:13px;padding:14px}.uberInputGrid{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:12px}.pendingWeeks{margin-top:14px}.pendingWeekLine{display:grid;grid-template-columns:1fr auto auto;gap:10px;align-items:center;padding:10px 0;border-bottom:1px solid var(--l);font-size:12px}.pendingWeekLine b{color:#b42318}
 .movementList{display:grid;gap:6px;margin-top:10px}.movementRow{display:flex;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--l);font-size:12px}.smallPlaceholder{padding:14px}.configTable{min-width:1100px}.configTable input,.configTable select{min-width:120px;padding:7px;font-size:12px}
+.historyTable{min-width:760px;table-layout:fixed}.historyTable th,.historyTable td{text-align:center!important;white-space:normal;font-size:13px}.historyTable th:nth-child(1){width:26%}.historyTable th:nth-child(2),.historyTable th:nth-child(3){width:20%}.historyTable th:nth-child(4){width:18%}.historyTable th:nth-child(5){width:16%}
 .headerActions{display:flex;gap:8px;align-items:center}.configButton{background:#171717;color:#d7b928;border:1px solid #3b2f0c}
 body.dark .vehicleControlCard,body.dark .uberForm,body.dark .legacySummary{background:#0f0f10;color:#f5f5f5;border-color:#242424}body.dark .vehicleCardHead small{color:#aaa}body.dark .cardTotals b,body.dark .legacyRow b{color:#fff}body.dark .legacyBalance{background:#151515}body.dark .pendingWeekLine,body.dark .legacyRow,body.dark .vehicleCardBody,body.dark .movementRow{border-color:#242424}body.dark .uberForm{background:#111}
 @media(max-width:850px){.uberLayout{grid-template-columns:1fr}.pendingWeekLine{grid-template-columns:1fr auto}.pendingWeekLine button{grid-column:1/-1}.vehicleCardHead{align-items:flex-start}.uberInputGrid{grid-template-columns:1fr}}
@@ -160,16 +161,17 @@ body.dark .vehicleControlCard,body.dark .uberForm,body.dark .legacySummary{backg
 </div>
 <div id="appShell">
 <header><div class="wrap" style="padding-bottom:0"><div class="headerFlex">
-<div><h1 style="margin:0">Base de Datos Flotilla</h1><div style="opacity:.75">Administración personal · V3.1</div></div>
+<div><h1 style="margin:0">Base de Datos Flotilla</h1><div style="opacity:.75">Administración personal · V4</div></div>
 <div class="headerActions"><button id="configButton" class="configButton" type="button">⚙️ Configuración</button><button id="themeToggle" class="themeToggle">🌙 Modo oscuro</button></div>
 </div></div></header>
 <div class="nav">
 <button class="dark navbtn" data-v="resumen">Resumen</button><button class="light navbtn" data-v="semana">Semana actual</button><button class="light navbtn" data-v="uber">Uber / Plan de pagos</button>
-<button class="light navbtn" data-v="vehiculos">Vehículos</button><button class="light navbtn" data-v="nuevo">Nuevo vehículo</button>
+<button class="light navbtn" data-v="historial">Historial</button><button class="light navbtn" data-v="vehiculos">Vehículos</button><button class="light navbtn" data-v="nuevo">Nuevo vehículo</button>
 <button class="light navbtn" data-v="gastos">Gastos y prioridades</button><button class="light navbtn" data-v="proyecciones">Proyecciones</button>
 </div>
 <div class="wrap">
 
+<section id="historial" class="view"><div class="card"><h2>Historial de movimientos</h2><div class="table"><table class="historyTable"><thead><tr><th>Vehículo</th><th>Fecha de actualización</th><th>Fecha de cuota pagada</th><th>Monto pagado</th><th>Acción</th></tr></thead><tbody id="movementHistory"></tbody></table></div><button id="moreMovements" class="light" style="margin-top:12px">Cargar 10 más</button></div></section>
 <section id="resumen" class="view active">
 <div class="weekKpis">
 <div class="metric">Esperado esta semana<b id="sumWeekExpected">₡0</b></div>
@@ -441,6 +443,7 @@ body.dark .vehicleControlCard,body.dark .uberForm,body.dark .legacySummary{backg
 </div>
 
 <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js" defer></script>
-<script src="./app.js?v=3.1"></script>
-<script src="./app-v3.js?v=3.1"></script>
+<script src="./app.js?v=4"></script>
+<script src="./app-v3.js?v=4"></script>
+<script src="./expenses.js?v=4"></script>
 </div></body></html>

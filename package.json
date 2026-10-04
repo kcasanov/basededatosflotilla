@@ -1,0 +1,25 @@
+{
+  "name": "basededatosflotilla",
+  "version": "1.0.0",
+  "description": "Administración local de flotilla; Netlify y Central deshabilitados.",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "test": "node tests/regression.cjs"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/kcasanov/basededatosflotilla.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/kcasanov/basededatosflotilla/issues"
+  },
+  "homepage": "https://github.com/kcasanov/basededatosflotilla#readme",
+  "dependencies": {
+    "express": "^5.2.1"
+  }
+}

@@ -54,7 +54,7 @@ function syncCentralCurrentWeekSafe_(device, weekDate) {
 
 function syncCentralCurrentWeek_(device, weekDate) {
   weekDate = ymd_(weekDate) || centralCurrentTuesday_();
-  var enabled = String(centralConfigValue_('CENTRAL_SYNC_ENABLED', 'FALSE')).toUpperCase() === 'TRUE';
+  var enabled = false; // Owner-requested stop.
   if (!enabled) return {ok:true, disabled:true, weekDate:weekDate, message:'Sincronización pausada.'};
 
   var start = centralConfigValue_('CENTRAL_SYNC_START', '2026-09-29');
