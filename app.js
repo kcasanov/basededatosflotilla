@@ -24,6 +24,8 @@ let expenseConfig = [];
 let contractVehicles = [];
 let planPayments = [];
 const paymentState = Object.create(null);
+const globalFundingStatusByWeek = Object.create(null);
+const globalFundingStatusRequests = Object.create(null);
 
 function crTodayUTC() {
   const parts = new Intl.DateTimeFormat('en-CA', {
@@ -381,35 +383,84 @@ function centralFundingSnapshot(tuesday = operationalTuesday()) {
       amount:Math.ceil(Math.max(0,e.need) / 500) * 500
     }]));
 }
+function pendingGlobalFundingItem(cuentaId, tuesday = weekDate()) {
+  const status = globalFundingStatusByWeek[isoDate(tuesday)];
+  return status?.items?.find(x => x.cuentaId === cuentaId && x.pending) || null;
+}
+async function refreshGlobalFundingStatus(tuesday = weekDate(), force = false) {
+  if (typeof backendCapabilities === 'undefined' || !backendCapabilities.globalAccountSyncReady) return null;
+  const week = isoDate(tuesday);
+  if (!force && globalFundingStatusByWeek[week]) return globalFundingStatusByWeek[week];
+  if (globalFundingStatusRequests[week]) return globalFundingStatusRequests[week];
+  globalFundingStatusRequests[week] = (async () => {
+    try {
+      const result = await backend('getGlobalFundingStatus', {
+        sessionToken:sessionStorage.getItem(SESSION_KEY),
+        weekDate:week
+      });
+      if (result?.ok && !result.disabled) {
+        globalFundingStatusByWeek[week] = result;
+        if (isoDate(weekDate()) === week) renderWeek();
+      }
+      return result;
+    } catch (_) {
+      return null;
+    } finally {
+      delete globalFundingStatusRequests[week];
+    }
+  })();
+  return globalFundingStatusRequests[week];
+}
+async function applyGlobalFundingAccount(cuentaId, account, tuesday = weekDate(), ask = true) {
+  if (ask && !confirm(`Se cubrió ${account.name} (${money(account.amount)}). ¿Deseás sumar este monto a su cuenta en el archivo global de Drive?`)) {
+    await refreshGlobalFundingStatus(tuesday, true);
+    return false;
+  }
+  try {
+    const result = await backend('syncGlobalAccount', {
+      sessionToken:sessionStorage.getItem(SESSION_KEY),
+      weekDate:isoDate(tuesday), cuentaId
+    });
+    if (!result.ok || result.disabled || (result.results || []).some(x => x.error)) {
+      throw new Error(result.message || (result.results || []).find(x => x.error)?.error || 'No se pudo actualizar el archivo global.');
+    }
+    const moved = Array.isArray(result.moved) ? result.moved : [];
+    if (moved.length) {
+      const detail = moved.map(x =>
+        `${account.name}: ${money(x.beforeBalance)} → ${money(x.afterBalance)} (${x.delta >= 0 ? '+' : ''}${money(x.delta)})`
+      ).join('\n');
+      alert('Cuenta actualizada en el archivo global de Drive.\n\n' + detail);
+    } else {
+      const row = (result.results || [])[0] || {};
+      const reason = row.status === 'SIN_CAMBIOS'
+        ? 'El backend calculó que no había un cambio pendiente para aplicar.'
+        : result.message || 'La operación terminó sin registrar un movimiento.';
+      alert('No se modificó el archivo global de Drive.\n\n' + reason);
+    }
+    await refreshGlobalFundingStatus(tuesday, true);
+    return moved.length > 0;
+  } catch (error) {
+    alert(error.message || 'No se pudo actualizar el archivo global.');
+    await refreshGlobalFundingStatus(tuesday, true);
+    return false;
+  }
+}
+async function retryGlobalFunding(cuentaId) {
+  const tuesday = weekDate();
+  const snapshot = centralFundingSnapshot(tuesday);
+  const account = snapshot[cuentaId];
+  if (!account?.ready) return alert('Esta cuenta ya no está completamente cubierta.');
+  await applyGlobalFundingAccount(cuentaId, account, tuesday, true);
+}
+
 async function offerCentralFunding(before, tuesday = operationalTuesday()) {
   if (typeof backendCapabilities === 'undefined' || !backendCapabilities.globalAccountSyncReady) return;
   const after = centralFundingSnapshot(tuesday);
   for (const [cuentaId, account] of Object.entries(after)) {
     if (!account.ready || before?.[cuentaId]?.ready) continue;
-    if (!confirm(`Se cubrió ${account.name} (${money(account.amount)}). ¿Deseás sumar este monto a su cuenta en el archivo global de Drive?`)) continue;
-    try {
-      const result = await backend('syncGlobalAccount', {
-        sessionToken:sessionStorage.getItem(SESSION_KEY),
-        weekDate:isoDate(tuesday), cuentaId
-      });
-      if (!result.ok || result.disabled || (result.results || []).some(x => x.error)) {
-        throw new Error(result.message || (result.results || []).find(x => x.error)?.error || 'No se pudo actualizar el archivo global.');
-      }
-      const moved = Array.isArray(result.moved) ? result.moved : [];
-      if (moved.length) {
-        const detail = moved.map(x =>
-          `${account.name}: ${money(x.beforeBalance)} → ${money(x.afterBalance)} (${x.delta >= 0 ? '+' : ''}${money(x.delta)})`
-        ).join('\n');
-        alert('Cuenta actualizada en el archivo global de Drive.\n\n' + detail);
-      } else {
-        const row = (result.results || [])[0] || {};
-        const reason = row.status === 'SIN_CAMBIOS'
-          ? 'El backend calculó que no había un cambio pendiente para aplicar.'
-          : result.message || 'La operación terminó sin registrar un movimiento.';
-        alert('No se modificó el archivo global de Drive.\n\n' + reason);
-      }
-    } catch (error) { alert(error.message || 'No se pudo actualizar el archivo global.'); }
+    await applyGlobalFundingAccount(cuentaId, account, tuesday, true);
   }
+  await refreshGlobalFundingStatus(tuesday, true);
 }
 function renderExpenseAllocation(expenses, available) {
   const used = expenses.reduce((s, e) => s + e.assigned, 0);
@@ -430,7 +481,11 @@ function renderExpenseAllocation(expenses, available) {
     const falta = Math.max(0, e.need - e.assigned);
     let state = falta <= .01 ? '🟢 Completa' : e.assigned > 0 ? '🟡 Parcial' : (e.priority === 'critical' ? '🔴 Pendiente' : '⚪ Pendiente');
     if ((e.id === 'pago_deudas' || e.name === 'Pago de deudas') && incoming > 0) state = '🟡 Pendiente de completar';
-    return `<tr><td><span class="priority ${priorityClass(e.priority)}">${priorityLabel(e.priority)}</span></td><td>${e.name}</td><td>${money(e.need)}</td><td>${money(e.assigned)}</td><td>${money(falta)}</td><td>${state}</td></tr>`;
+    const globalPending = pendingGlobalFundingItem(e.id);
+    const globalButton = globalPending
+      ? `<div style="margin-top:6px"><button class="light miniBtn" onclick="retryGlobalFunding('${e.id}')">Pendiente de aplicar en file global</button></div>`
+      : '';
+    return `<tr><td><span class="priority ${priorityClass(e.priority)}">${priorityLabel(e.priority)}</span></td><td>${e.name}${globalButton}</td><td>${money(e.need)}</td><td>${money(e.assigned)}</td><td>${money(falta)}</td><td>${state}</td></tr>`;
   }).join('');
 }
 function renderExpenseConfig() {
@@ -480,6 +535,7 @@ function renderWeek() {
   const expenses = allocateExpenses(currentExpenses(rows, d), cash.operational, cash.debtRecovery);
   renderExpenseAllocation(expenses, received);
   renderSummary();
+  void refreshGlobalFundingStatus(d);
 }
 async function markWeekRowPaid(encodedKey) {
   const key = decodeURIComponent(encodedKey);
