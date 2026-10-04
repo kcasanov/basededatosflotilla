@@ -91,10 +91,12 @@ function syncCentralCurrentWeek_(device, weekDate, onlyAccount, lockAlreadyHeld)
       }
 
       var prior = centralSyncState_(weekDate, item.syncKey);
-      var syncedBefore = prior ? num_(prior.SyncedAmount) : 0;
       var desiredAmount = centralRoundUp500_(item.desiredAmount);
-      var delta = centralRound_(desiredAmount - syncedBefore);
       var pending = prior && String(prior.Status || '') === 'PENDING' && String(prior.OperationID || '');
+      var syncedBefore = pending
+        ? num_(prior.SyncedAmount)
+        : centralGlobalSyncedAmount_(weekDate, item.syncKey, centralId);
+      var delta = centralRound_(desiredAmount - syncedBefore);
       if (!pending && Math.abs(delta) < 0.01) {
         results.push({syncKey:item.syncKey, centralAccountId:centralId, desiredAmount:desiredAmount, delta:0, status:'SIN_CAMBIOS'});
         return;
@@ -247,11 +249,25 @@ function reconcileGlobalAfterPaymentReversal_(device, scheduledDate, realDate, l
     }
   });
 
+  var moved = [];
+  results.forEach(function(entry) {
+    (entry.response && entry.response.moved || []).forEach(function(change) {
+      moved.push({
+        cuentaId:entry.cuentaId,
+        centralAccountId:String(change.centralAccountId || ''),
+        beforeBalance:centralRound_(change.beforeBalance),
+        delta:centralRound_(change.delta),
+        afterBalance:centralRound_(change.afterBalance)
+      });
+    });
+  });
+
   return {
     ok:errors.length===0,
     weekDate:weekDate,
     accounts:accounts,
     results:results,
+    moved:moved,
     totalRemoved:centralRound_(totalRemoved),
     errors:errors,
     message:errors.length ? 'El pago se reversó, pero uno o más aportes globales quedaron pendientes de revisión.' : 'Aportes globales reconciliados.'
@@ -600,6 +616,24 @@ function centralGlobalAccount_(sheet, id) {
     }
   }
   return null;
+}
+
+function centralGlobalSyncedAmount_(weekDate, syncKey, centralId) {
+  try {
+    var history = centralGlobalSheets_().history, last = history.getLastRow();
+    if (last < 2) return 0;
+    var rows = history.getRange(2,1,last-1,10).getValues();
+    var prefix = 'FLOTILLA_' + String(weekDate || '').replace(/-/g,'') + '_' + String(syncKey || '') + '_';
+    var accountKey = String(centralId || '').trim().toLowerCase();
+    return centralRound_(rows.reduce(function(sum,row) {
+      var operationId = String(row[1] || '');
+      var accountId = String(row[4] || '').trim().toLowerCase();
+      if (operationId.indexOf(prefix) !== 0 || accountId !== accountKey) return sum;
+      return sum + num_(row[6]);
+    },0));
+  } catch (e) {
+    throw new Error('No se pudo verificar el historial real del archivo global: ' + String(e && e.message || e));
+  }
 }
 
 function centralApiGetOperation_(operationId) {
