@@ -395,6 +395,19 @@ async function offerCentralFunding(before, tuesday = operationalTuesday()) {
       if (!result.ok || result.disabled || (result.results || []).some(x => x.error)) {
         throw new Error(result.message || (result.results || []).find(x => x.error)?.error || 'No se pudo actualizar el archivo global.');
       }
+      const moved = Array.isArray(result.moved) ? result.moved : [];
+      if (moved.length) {
+        const detail = moved.map(x =>
+          `${account.name}: ${money(x.beforeBalance)} → ${money(x.afterBalance)} (${x.delta >= 0 ? '+' : ''}${money(x.delta)})`
+        ).join('\n');
+        alert('Cuenta actualizada en el archivo global de Drive.\n\n' + detail);
+      } else {
+        const row = (result.results || [])[0] || {};
+        const reason = row.status === 'SIN_CAMBIOS'
+          ? 'El backend calculó que no había un cambio pendiente para aplicar.'
+          : result.message || 'La operación terminó sin registrar un movimiento.';
+        alert('No se modificó el archivo global de Drive.\n\n' + reason);
+      }
     } catch (error) { alert(error.message || 'No se pudo actualizar el archivo global.'); }
   }
 }
