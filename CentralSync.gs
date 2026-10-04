@@ -35,12 +35,16 @@ function authorizeCentralConnection() {
 }
 
 function syncCentralCurrentWeekNow() {
-  return syncCentralCurrentWeek_('manual_apps_script', centralCurrentTuesday_());
+  return {ok:false, message:'Elegí una cuenta desde Flotilla para confirmar su sincronización.'};
 }
 
 function syncCentralAction_(body, device) {
   var weekDate = ymd_(body.weekDate) || centralCurrentTuesday_();
-  return syncCentralCurrentWeek_(device || 'system', weekDate);
+  var cuentaId = String(body.cuentaId || '').trim();
+  if (!['omoda','coopealianza','u','seguros'].includes(cuentaId)) {
+    return {ok:false, message:'Seleccioná una cuenta válida para sincronizar.'};
+  }
+  return syncCentralCurrentWeek_(device || 'system', weekDate, cuentaId);
 }
 
 function syncCentralCurrentWeekSafe_(device, weekDate) {
@@ -52,10 +56,13 @@ function syncCentralCurrentWeekSafe_(device, weekDate) {
   }
 }
 
-function syncCentralCurrentWeek_(device, weekDate) {
+function syncCentralCurrentWeek_(device, weekDate, onlyAccount) {
   weekDate = ymd_(weekDate) || centralCurrentTuesday_();
   var enabled = false; // Owner-requested stop.
   if (!enabled) return {ok:true, disabled:true, weekDate:weekDate, message:'Sincronización pausada.'};
+  if (!['omoda','coopealianza','u','seguros'].includes(String(onlyAccount || ''))) {
+    return {ok:false, weekDate:weekDate, message:'Falta seleccionar una cuenta para sincronizar.'};
+  }
 
   var start = centralConfigValue_('CENTRAL_SYNC_START', '2026-09-29');
   if (start && weekDate < start) {
@@ -73,7 +80,9 @@ function syncCentralCurrentWeek_(device, weekDate) {
   try {
     var model = centralBuildWeekModel_(weekDate);
     var mappings = centralActiveMappings_();
-    var desired = centralDesiredItems_(model, mappings);
+    var desired = centralDesiredItems_(model, mappings).filter(function(item) {
+      return !onlyAccount || item.cuentaId === onlyAccount;
+    });
     if (!desired.length) return centralSummarizeResult_({ok:true, configured:true, weekDate:weekDate, results:[]});
 
     var snapshot = centralApiGetAccounts_(token);

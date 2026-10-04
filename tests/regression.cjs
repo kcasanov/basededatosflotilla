@@ -203,19 +203,20 @@ syncTest.centralApiPost_=(token,payload)=>{
   syncOperation={accountId:payload.id,movement,newBalance:payload.balance};
   return syncPostMode==='lostResponse'?{ok:false,error:'timeout'}:{ok:true};
 };
-eq(syncTest.syncCentralCurrentWeek_('test','2026-09-29').results[0].error,'timeout','lost Central response remains pending');
+eq(syncTest.syncCentralCurrentWeek_('test','2026-09-29','omoda').results[0].error,'timeout','lost Central response remains pending');
 eq([syncState.Status,syncBalance,syncPosts],['PENDING',150000,1],'pending operation records write before Central call');
-eq(syncTest.syncCentralCurrentWeek_('test','2026-09-29').results[0].status,'RECUPERADA','retry recognizes already applied Central operation');
+eq(syncTest.syncCentralCurrentWeek_('test','2026-09-29','omoda').results[0].status,'RECUPERADA','retry recognizes already applied Central operation');
 eq([syncState.Status,syncBalance,syncPosts],['OK',150000,1],'retry does not double credit Central');
 syncNeed=51000;syncPostMode='success';syncOperation=null;
-eq(syncTest.syncCentralCurrentWeek_('test','2026-09-29').results[0].delta,1000,'later increase sends only new amount');
+eq(syncTest.syncCentralCurrentWeek_('test','2026-09-29','omoda').results[0].delta,1000,'later increase sends only new amount');
 eq([syncBalance,syncPosts],[151000,2],'later increase uses a new operation');
 syncNeed=50000;syncBalance=100000;syncState=null;syncOperation=null;syncPosts=0;syncPostMode='failBefore';
-syncTest.syncCentralCurrentWeek_('test','2026-09-29');
+syncTest.syncCentralCurrentWeek_('test','2026-09-29','omoda');
 const retryId=syncState.OperationID;
 syncPostMode='success';
-eq(syncTest.syncCentralCurrentWeek_('test','2026-09-29').results[0].status,'OK','safe retry applies an operation that never reached Central');
+eq(syncTest.syncCentralCurrentWeek_('test','2026-09-29','omoda').results[0].status,'OK','safe retry applies an operation that never reached Central');
 eq([syncBalance,syncPosts,syncState.OperationID],[150000,2,retryId],'safe retry keeps original operation id');
+eq(syncTest.syncCentralCurrentWeek_('test','2026-09-29').ok,false,'Central refuses unconfirmed bulk sync');
 run("planDashboardV3=[];planDashboardLoadedV3=false;globalThis.planRenders=0;backend=async action=>({ok:true,cards:[{vehicleId:'i10',integrationActive:true,legacyPending:[{date:'2026-06-02',quota:100,week:1}]}]});renderWeek=()=>planRenders++;renderSummary=()=>planRenders++;renderVehicles=()=>planRenders++;");
 context.loadPlanDashboardV3(true).then(()=>{
   eq(run('planDashboardLoadedV3'),true,'background plan marked ready');
