@@ -90,24 +90,29 @@ const main={getSheetByName:n=>mainSheets[n]};
 const server=vm.createContext({console,Date,JSON,Number,isFinite,SpreadsheetApp:{openById:id=>id==='main'?main:{getSheetByName:()=>external},flush(){}},PropertiesService:{getScriptProperties:()=>({getProperty:key=>scriptProps.get(key)||null})},Utilities:{formatDate:d=>new Date(d).toISOString().slice(0,10),getUuid:()=>String(++uuid)}});
 vm.runInContext(fs.readFileSync('Code.gs','utf8'),server);
 vm.runInContext(fs.readFileSync('CentralSync.gs','utf8'),server);
+external.rows[9][2]='₡100,00';
+eq(server.legacyObligationsTo_(external,'2026-09-22').find(r=>r.date==='2026-09-22').amount,100,'localized currency in imported plan');
+external.rows[9][2]=100;
 eq(server.syncCentralCurrentWeek_('test','2026-09-29').disabled,true,'Central remains disabled');
 const centralMappings=[
   {SyncKey:'omoda',CuentaID:'omoda',CentralAccountID:'omoda'},
   {SyncKey:'universidad',CuentaID:'u',CentralAccountID:'universidad_fondo'},
   {SyncKey:'seguro_i10',CuentaID:'seguros',VehicleID:'i10',Modo:'INSURANCE',CentralAccountID:'i10'}
 ];
-const centralModel={accounts:[
+const centralModel={weekDate:'2026-10-06',accounts:[
+  {id:'casa',need:25000,assigned:24999},
   {id:'omoda',need:50000,assigned:49999},
   {id:'u',need:25000,assigned:25000},
   {id:'pago_deudas',need:3000,assigned:3000},
   {id:'seguros',need:5000,assigned:4999}
 ],rows:[{vehicleId:'i10',insurance:5000}]};
 let centralItems=server.centralDesiredItems_(centralModel,centralMappings);
-eq(centralItems.map(x=>[x.cuentaId,x.desiredAmount]),[['omoda',0],['u',25000],['seguros',0]],'Central waits for full weekly accounts and excludes debt remnant');
-centralModel.accounts[0].assigned=50000;
-centralModel.accounts[3].assigned=5000;
+eq(centralItems.map(x=>[x.cuentaId,x.desiredAmount,x.map.CentralAccountID]),[['casa',0,'cuentas_casa'],['omoda',0,'omoda'],['u',25000,'semana_1'],['seguros',0,'i10']],'Drive mapping uses existing home and university accounts');
+centralModel.accounts[0].assigned=25000;
+centralModel.accounts[1].assigned=50000;
+centralModel.accounts[4].assigned=5000;
 centralItems=server.centralDesiredItems_(centralModel,centralMappings);
-eq(centralItems.map(x=>[x.cuentaId,x.desiredAmount]),[['omoda',50000],['u',25000],['seguros',5000]],'Central can fund full accounts and insurance');
+eq(centralItems.map(x=>[x.cuentaId,x.desiredAmount]),[['casa',25000],['omoda',50000],['u',25000],['seguros',5000]],'Drive waits for fully covered accounts');
 for (const [amount,rounded] of [[0,0],[1,500],[500,500],[500.01,1000],[12287,12500],[12700,13000]]) {
   eq(server.centralRoundUp500_(amount),rounded,'Central rounds contributions upward to 500 colones');
 }
@@ -116,8 +121,31 @@ const cashMovements=[{FechaProgramada:'2026-09-08',FechaReal:'2026-10-03',MontoR
 eq(server.centralCashReceivedForWeek_(cashMovements,'2026-09-28','2026-10-04'),100,'Central includes late receipts in actual cash week');
 eq(server.centralCashReceivedForWeek_(cashMovements,'2026-10-05','2026-10-11'),20,'Central respects Monday boundary');
 scriptProps.set('FLOTILLA_TEST_MODE','TRUE');
-eq(server.centralApiGetAccounts_('test').ok,false,'test mode blocks Central reads');
-eq(server.centralApiPost_('test',{action:'updateBalance'}).ok,false,'test mode blocks Central writes');
+eq(server.globalSyncReady_(),false,'test mode leaves Drive writes disabled by default');
+assert.throws(()=>server.globalSpreadsheetId_(),/copia distinta/); checks++;
+scriptProps.set('FLOTILLA_GLOBAL_SPREADSHEET_ID',vm.runInContext('GLOBAL_ACCOUNTS_SPREADSHEET_ID_',server));
+assert.throws(()=>server.globalSpreadsheetId_(),/copia distinta/); checks++;
+scriptProps.set('FLOTILLA_GLOBAL_SPREADSHEET_ID','global');
+scriptProps.set('FLOTILLA_GLOBAL_SYNC_ENABLED','TRUE');
+eq(server.globalSyncReady_(),true,'Drive sync enables only with an isolated target');
+const globalAccounts=new Sheet([
+  ['Cuentas mensuales'],[''],['Nombre de la cuenta','Saldo','Tipo','ID','Categoria ID'],
+  ['cuentas casa',25000,'cuenta','cuentas_casa','tarjeta_siguiente_mes'],
+  ['Semana 1',26000,'cuenta','semana_1','universidad']
+]);
+const globalHistory=new Sheet([['Fecha y hora','Operación ID','Tipo','Cuenta','ID cuenta','Saldo anterior','Movimiento','Saldo nuevo','Mes','Semana']]);
+const globalWorkbook={getSheetByName:n=>({'Cuentas mensuales':globalAccounts,Historial:globalHistory})[n]};
+const originalOpenById=server.SpreadsheetApp.openById;
+server.SpreadsheetApp.openById=id=>id==='global'?globalWorkbook:originalOpenById(id);
+eq(server.centralApiGetAccounts_().accounts.map(a=>[a.id,a.balance]),[['cuentas_casa',25000],['semana_1',26000]],'Drive reads existing account IDs and balances');
+const housePayload={action:'updateBalance',id:'cuentas_casa',balance:50000,context:{operationId:'TEST-HOUSE-1',expectedBalance:25000,month:'2026-10',week:'2026-10-06'}};
+eq(server.centralApiPost_(housePayload).ok,true,'Drive adds to the existing home balance');
+eq([globalAccounts.rows[3][1],globalHistory.rows.length],[50000,2],'Drive persists balance and one history row');
+eq(server.centralApiGetOperation_('TEST-HOUSE-1').operation.movement,25000,'Drive finds the exact recorded movement');
+eq(server.centralApiPost_(housePayload).alreadyApplied,true,'Drive rejects duplicate operation IDs');
+eq([globalAccounts.rows[3][1],globalHistory.rows.length],[50000,2],'duplicate does not add twice');
+eq(server.centralApiPost_({...housePayload,context:{...housePayload.context,operationId:'TEST-HOUSE-2'}}).ok,false,'stale balance blocks overlapping writes');
+server.SpreadsheetApp.openById=originalOpenById;
 assert.throws(()=>server.mainSpreadsheetId_(),/configure una copia distinta/); checks++;
 scriptProps.set('FLOTILLA_DATA_SPREADSHEET_ID',vm.runInContext('SPREADSHEET_ID',server));
 assert.throws(()=>server.mainSpreadsheetId_(),/configure una copia distinta/); checks++;
@@ -175,16 +203,17 @@ eq(save('2026-09-22',80).ok,false,'failed correction reported');
 mainSheets.Uber_Semanas.appendRow=append;
 eq(JSON.stringify({payments:mainSheets.Pagos_Reales.rows,weeks:mainSheets.Uber_Semanas.rows,external:external.rows}),before,'rollback restores all allocation data');
 eq(save('2026-10-13',100).ok,false,'future week rejected');
-const syncCode=fs.readFileSync('CentralSync.gs','utf8').replace('var enabled = false; // Owner-requested stop.','var enabled = true; // Isolated test only.');
+const syncCode=fs.readFileSync('CentralSync.gs','utf8');
 const syncTest=vm.createContext({
   Date,JSON,Math,Number,isFinite,console,doPost(){},json_(){},protected_(){},
   num_:value=>Number(value)||0,ymd_:value=>String(value||''),
-  props_:()=>({getProperty:key=>key==='CENTRAL_API_TOKEN'?'test-token':null}),
+  props_:()=>({getProperty:()=>null}),
   LockService:{getScriptLock:()=>({tryLock:()=>true,releaseLock(){}})},
   Utilities:{getUuid:(()=>{let n=0;return ()=>String(++n);})()},
   SpreadsheetApp:{flush(){}},log_(){}
 });
 vm.runInContext(syncCode,syncTest);
+syncTest.globalSyncReady_=()=>true;
 let syncNeed=50000,syncBalance=100000,syncState=null,syncOperation=null,syncPosts=0,syncPostMode='lostResponse';
 syncTest.centralConfigValue_=()=>'';
 syncTest.centralBuildWeekModel_=()=>({accounts:[{id:'omoda',need:syncNeed,assigned:syncNeed}],rows:[]});
@@ -195,7 +224,7 @@ syncTest.centralUpsertSyncState_=(week,item,desired,synced,delta,status,operatio
   syncState={...operation,DesiredAmount:desired,SyncedAmount:synced,Delta:delta,Status:status};
 };
 syncTest.centralApiGetOperation_=()=>syncOperation?{ok:true,found:true,operation:syncOperation}:{ok:true,found:false};
-syncTest.centralApiPost_=(token,payload)=>{
+syncTest.centralApiPost_=(payload)=>{
   syncPosts++;
   if(syncPostMode==='failBefore')return {ok:false,error:'timeout'};
   const movement=payload.balance-syncBalance;
@@ -221,12 +250,13 @@ run("planDashboardV3=[];planDashboardLoadedV3=false;globalThis.planRenders=0;bac
 context.loadPlanDashboardV3(true).then(async()=>{
   eq(run('planDashboardLoadedV3'),true,'background plan marked ready');
   eq(run('planRenders'),3,'pending sections refreshed after plan load');
-  run("rowsForTuesday=()=>[];currentExpenses=()=>[{id:'omoda',name:'Omoda',need:50000,assigned:0,priority:'critical',order:1,type:'weekly'},{id:'pago_deudas',name:'Pago de deudas',need:0,assigned:0,priority:'low',order:2,type:'remainder'}];receivedCashForWeek=()=>50000;backendCapabilities={centralSyncReady:true};globalThis.centralCalls=[];backend=async(action,payload)=>{centralCalls.push({action,payload});return {ok:true,results:[]};};");
+  run("rowsForTuesday=()=>[];currentExpenses=()=>[{id:'casa',name:'Cuentas casa',need:25000,assigned:0,priority:'critical',order:1,type:'weekly'},{id:'omoda',name:'Omoda',need:50000,assigned:0,priority:'critical',order:2,type:'weekly'},{id:'pago_deudas',name:'Pago de deudas',need:0,assigned:0,priority:'low',order:3,type:'remainder'}];receivedCashForWeek=()=>75000;backendCapabilities={globalAccountSyncReady:true};globalThis.centralCalls=[];backend=async(action,payload)=>{centralCalls.push({action,payload});return {ok:true,results:[]};};");
+  eq(run("centralFundingSnapshot().casa.ready"),true,'fully funded home account is eligible for confirmation');
   eq(run("centralFundingSnapshot().omoda.ready"),true,'fully funded account is eligible for confirmation');
   eq(run("Object.keys(centralFundingSnapshot()).includes('pago_deudas')"),false,'debt remnant never prompts for Central');
   await context.offerCentralFunding({omoda:{ready:false}});
-  eq(run("centralCalls.map(x=>[x.action,x.payload.cuentaId,x.payload.weekDate])"),[['syncCentral','omoda','2026-09-29']],'confirmation submits only selected account');
-  await context.offerCentralFunding({omoda:{ready:true}});
-  eq(run('centralCalls.length'),1,'already funded account does not prompt again');
+  eq(run("centralCalls.map(x=>[x.action,x.payload.cuentaId,x.payload.weekDate])"),[['syncGlobalAccount','casa','2026-09-29'],['syncGlobalAccount','omoda','2026-09-29']],'confirmation submits each newly funded account to Drive');
+  await context.offerCentralFunding({casa:{ready:true},omoda:{ready:true}});
+  eq(run('centralCalls.length'),2,'already funded accounts do not prompt again');
   console.log(`${checks} regression checks passed; no external API was called.`);
 }).catch(error=>{console.error(error);process.exitCode=1;});

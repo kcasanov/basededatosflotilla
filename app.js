@@ -118,7 +118,8 @@ function getDeviceId() {
   return id;
 }
 async function backend(action, payload = {}) {
-  if(action==='syncCentral' && (typeof backendCapabilities === 'undefined' || !backendCapabilities.centralSyncReady))return {ok:true,disabled:true};
+  if(action==='syncCentral')return {ok:true,disabled:true};
+  if(action==='syncGlobalAccount' && (typeof backendCapabilities === 'undefined' || !backendCapabilities.globalAccountSyncReady))return {ok:true,disabled:true};
   const res = await fetch(BACKEND_URL, {
     method: 'POST',
     signal: AbortSignal.timeout(45000),
@@ -347,7 +348,7 @@ function centralFundingSnapshot() {
   const rows = rowsForTuesday(tuesday);
   const expenses = allocateExpenses(currentExpenses(rows, tuesday), receivedCashForWeek(tuesday));
   return Object.fromEntries(expenses
-    .filter(e => ['omoda','coopealianza','u','seguros'].includes(e.id))
+    .filter(e => ['casa','omoda','coopealianza','u','seguros'].includes(e.id))
     .map(e => [e.id, {
       name:e.name,
       ready:e.need > .005 && e.assigned >= e.need - .005,
@@ -355,20 +356,20 @@ function centralFundingSnapshot() {
     }]));
 }
 async function offerCentralFunding(before) {
-  if (typeof backendCapabilities === 'undefined' || !backendCapabilities.centralSyncReady) return;
+  if (typeof backendCapabilities === 'undefined' || !backendCapabilities.globalAccountSyncReady) return;
   const after = centralFundingSnapshot();
   for (const [cuentaId, account] of Object.entries(after)) {
     if (!account.ready || before?.[cuentaId]?.ready) continue;
-    if (!confirm(`Se cubrió ${account.name} (${money(account.amount)}). ¿Deseás reflejarlo en la Central de pagos?`)) continue;
+    if (!confirm(`Se cubrió ${account.name} (${money(account.amount)}). ¿Deseás sumar este monto a su cuenta en el archivo global de Drive?`)) continue;
     try {
-      const result = await backend('syncCentral', {
+      const result = await backend('syncGlobalAccount', {
         sessionToken:sessionStorage.getItem(SESSION_KEY),
         weekDate:isoDate(operationalTuesday()), cuentaId
       });
       if (!result.ok || result.disabled || (result.results || []).some(x => x.error)) {
-        throw new Error(result.message || (result.results || []).find(x => x.error)?.error || 'No se pudo actualizar Central.');
+        throw new Error(result.message || (result.results || []).find(x => x.error)?.error || 'No se pudo actualizar el archivo global.');
       }
-    } catch (error) { alert(error.message || 'No se pudo actualizar Central.'); }
+    } catch (error) { alert(error.message || 'No se pudo actualizar el archivo global.'); }
   }
 }
 function renderExpenseAllocation(expenses, available) {

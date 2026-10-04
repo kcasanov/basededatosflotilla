@@ -32,6 +32,7 @@ function doPost(e) {
       case 'getPlanDashboard': result = protected_(body, getPlanDashboard_); break;
       case 'saveUberWeek': result = protected_(body, saveUberWeek_); break;
       case 'syncCentral': result = {ok:true,disabled:true,message:'Sincronización pausada.'}; break;
+      case 'syncGlobalAccount': result = protected_(body, syncCentralAction_); break;
       default: result = {ok:false, message:'Acción no válida'};
     }
     return json_(result);
@@ -69,6 +70,16 @@ function ymd_(value) {
   return isNaN(d) ? '' : Utilities.formatDate(d, TZ, 'yyyy-MM-dd');
 }
 function num_(v) { const n = Number(v); return isFinite(n) ? n : 0; }
+function legacyMoney_(v) {
+  if (typeof v === 'number') return num_(v);
+  let s = String(v == null ? '' : v).replace(/[₡\s\u00a0\u202f]/g, '').replace(/[^0-9,.-]/g, '');
+  if (!s) return 0;
+  const comma = s.lastIndexOf(','), dot = s.lastIndexOf('.');
+  if (comma > dot) s = s.replace(/\./g, '').replace(',', '.');
+  else if (dot > comma && comma >= 0) s = s.replace(/,/g, '');
+  else if (comma >= 0) s = s.replace(',', '.');
+  return num_(s);
+}
 function bool_(v) { return v === true || String(v).toUpperCase() === 'TRUE' || String(v) === '1'; }
 
 function login_(body) {
@@ -142,7 +153,7 @@ function protected_(body,handler){
 
 function bootstrap_(){
   const ss=SpreadsheetApp.openById(mainSpreadsheetId_());
-  return{ok:true,capabilities:{safeUber:true,specificManualReversal:true,centralSyncReady:false},vehicles:sheetObjects_(ss.getSheetByName('Vehiculos')),accounts:sheetObjects_(ss.getSheetByName('Cuentas')),payments:sheetObjects_(ss.getSheetByName('Pagos_Reales')),plans:sheetObjects_(ss.getSheetByName('Plan_Pagos')),reversedPayments:reversedPayments_(ss),uberWeeks:sheetObjects_(ss.getSheetByName('Uber_Semanas'))};
+  return{ok:true,capabilities:{safeUber:true,specificManualReversal:true,centralSyncReady:false,globalAccountSyncReady:globalSyncReady_()},vehicles:sheetObjects_(ss.getSheetByName('Vehiculos')),accounts:sheetObjects_(ss.getSheetByName('Cuentas')),payments:sheetObjects_(ss.getSheetByName('Pagos_Reales')),plans:sheetObjects_(ss.getSheetByName('Plan_Pagos')),reversedPayments:reversedPayments_(ss),uberWeeks:sheetObjects_(ss.getSheetByName('Uber_Semanas'))};
 }
 
 function markPayment_(body,device){
@@ -228,7 +239,7 @@ function legacyObligationsTo_(sh,targetDate){
   let quotaIdx=header.findIndex(x=>norm(x)==='cuota total'); if(quotaIdx<0)quotaIdx=header.findIndex(x=>norm(x)==='cuota');
   if(weekIdx<0||dateIdx<0)return[];
   const values=sh.getRange(9,1,sh.getLastRow()-8,width).getValues(),out=[];
-  values.forEach((r,i)=>{const date=ymd_(r[dateIdx]);if(!date||date>targetDate)return;out.push({row:i+9,week:num_(r[weekIdx]),date:date,amount:quotaIdx>=0?num_(r[quotaIdx]):0,state:stateIdx>=0?String(r[stateIdx]||''):''});});
+  values.forEach((r,i)=>{const date=ymd_(r[dateIdx]);if(!date||date>targetDate)return;out.push({row:i+9,week:num_(r[weekIdx]),date:date,amount:quotaIdx>=0?legacyMoney_(r[quotaIdx]):0,state:stateIdx>=0?String(r[stateIdx]||''):''});});
   return out.sort((a,b)=>a.date.localeCompare(b.date));
 }
 function pendingDueObligations_(rows,todayIso){

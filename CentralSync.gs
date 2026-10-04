@@ -1,35 +1,31 @@
 /*
- * Base de Datos Flotilla · Integración Central de Cuentas · V3.3
+ * Base de Datos Flotilla · Aportes directos al archivo global de Drive
  *
- * La sincronización con Central se ejecuta en una llamada separada del guardado
- * del pago. Así un fallo/timeout de Central nunca impide guardar el abono.
+ * El aporte se ejecuta después del pago y solo con autorización en la interfaz.
+ * La Central lee el mismo archivo global; Flotilla no llama a su Apps Script.
  *
- * Script Properties requeridas:
- *   CENTRAL_API_TOKEN
- *
- * Config requerida:
- *   CENTRAL_API_URL
- *   CENTRAL_SYNC_ENABLED
- *   CENTRAL_SYNC_START
+ * Script Properties: FLOTILLA_GLOBAL_SYNC_ENABLED=TRUE y, en pruebas,
+ * FLOTILLA_GLOBAL_SPREADSHEET_ID=<copia distinta del archivo global>.
  */
 
-var _baseDoPostV33_ = doPost;
-doPost = function(e) {
-  try {
-    var body = JSON.parse((e && e.postData && e.postData.contents) || '{}');
-    if (String(body.action || '') === 'syncCentral') {
-      return json_(protected_(body, syncCentralAction_));
-    }
-  } catch (err) {
-    return json_({ok:false, message:'Error del servidor', detail:String(err && err.message || err)});
+var GLOBAL_ACCOUNTS_SPREADSHEET_ID_ = '1JzFD2DDcCNWebZQ9F3Xw_zztU_mBfjD4';
+
+function globalSpreadsheetId_() {
+  if (!isTestMode_()) return GLOBAL_ACCOUNTS_SPREADSHEET_ID_;
+  var id = String(props_().getProperty('FLOTILLA_GLOBAL_SPREADSHEET_ID') || '').trim();
+  if (!id || id === GLOBAL_ACCOUNTS_SPREADSHEET_ID_) {
+    throw new Error('Pruebas: configurá una copia distinta del archivo global.');
   }
-  return _baseDoPostV33_(e);
-};
+  return id;
+}
+
+function globalSyncReady_() {
+  if (String(props_().getProperty('FLOTILLA_GLOBAL_SYNC_ENABLED') || '').toUpperCase() !== 'TRUE') return false;
+  try { globalSpreadsheetId_(); return true; } catch (_) { return false; }
+}
 
 function authorizeCentralConnection() {
-  var token = props_().getProperty('CENTRAL_API_TOKEN');
-  if (!token) throw new Error('Falta CENTRAL_API_TOKEN en Script Properties.');
-  var result = centralApiGetAccounts_(token);
+  var result = centralApiGetAccounts_();
   Logger.log(JSON.stringify(result));
   return result;
 }
@@ -41,7 +37,7 @@ function syncCentralCurrentWeekNow() {
 function syncCentralAction_(body, device) {
   var weekDate = ymd_(body.weekDate) || centralCurrentTuesday_();
   var cuentaId = String(body.cuentaId || '').trim();
-  if (!['omoda','coopealianza','u','seguros'].includes(cuentaId)) {
+  if (!['casa','omoda','coopealianza','u','seguros'].includes(cuentaId)) {
     return {ok:false, message:'Seleccioná una cuenta válida para sincronizar.'};
   }
   return syncCentralCurrentWeek_(device || 'system', weekDate, cuentaId);
@@ -58,21 +54,14 @@ function syncCentralCurrentWeekSafe_(device, weekDate) {
 
 function syncCentralCurrentWeek_(device, weekDate, onlyAccount) {
   weekDate = ymd_(weekDate) || centralCurrentTuesday_();
-  var enabled = false; // Owner-requested stop.
-  if (!enabled) return {ok:true, disabled:true, weekDate:weekDate, message:'Sincronización pausada.'};
-  if (!['omoda','coopealianza','u','seguros'].includes(String(onlyAccount || ''))) {
+  if (!globalSyncReady_()) return {ok:true, disabled:true, weekDate:weekDate, message:'Aportes al archivo global desactivados.'};
+  if (!['casa','omoda','coopealianza','u','seguros'].includes(String(onlyAccount || ''))) {
     return {ok:false, weekDate:weekDate, message:'Falta seleccionar una cuenta para sincronizar.'};
   }
 
   var start = centralConfigValue_('CENTRAL_SYNC_START', '2026-09-29');
   if (start && weekDate < start) {
     return {ok:true, skipped:true, weekDate:weekDate, message:'Semana anterior al inicio de sincronización.'};
-  }
-
-  var token = props_().getProperty('CENTRAL_API_TOKEN');
-  if (!token) {
-    log_('CENTRAL_SYNC', weekDate, 'NOT_CONFIGURED', 'Falta CENTRAL_API_TOKEN en Script Properties', device);
-    return {ok:false, configured:false, weekDate:weekDate, message:'Falta CENTRAL_API_TOKEN en Script Properties.'};
   }
 
   var lock = LockService.getScriptLock();
@@ -85,8 +74,8 @@ function syncCentralCurrentWeek_(device, weekDate, onlyAccount) {
     });
     if (!desired.length) return centralSummarizeResult_({ok:true, configured:true, weekDate:weekDate, results:[]});
 
-    var snapshot = centralApiGetAccounts_(token);
-    if (!snapshot.ok) throw new Error(snapshot.error || 'No se pudieron leer las cuentas de Central.');
+    var snapshot = centralApiGetAccounts_();
+    if (!snapshot.ok) throw new Error(snapshot.error || 'No se pudieron leer las cuentas del archivo global.');
     var accounts = snapshot.accounts || [];
     var results = [];
 
@@ -109,29 +98,8 @@ function syncCentralCurrentWeek_(device, weekDate, onlyAccount) {
       }
 
       var account = centralFindAccount_(accounts, centralId);
-      if (!account && String(item.cuentaId || '') === 'u') {
-        var create = centralApiPost_(token, {
-          action:'createAccount',
-          id:centralId,
-          name:'Fondo Universidad',
-          balance:0,
-          categoryId:String(map.CentralCategoryID || 'universidad')
-        });
-        if (!create.ok) {
-          results.push({syncKey:item.syncKey, error:create.error || 'No se pudo crear Fondo Universidad'});
-          return;
-        }
-        snapshot = centralApiGetAccounts_(token);
-        if (!snapshot.ok) {
-          results.push({syncKey:item.syncKey, error:snapshot.error || 'No se pudo refrescar Central'});
-          return;
-        }
-        accounts = snapshot.accounts || [];
-        account = centralFindAccount_(accounts, centralId);
-      }
-
       if (!account) {
-        results.push({syncKey:item.syncKey, error:'Cuenta no encontrada en Central: ' + centralId});
+        results.push({syncKey:item.syncKey, error:'Cuenta no encontrada en el archivo global: ' + centralId});
         return;
       }
 
@@ -141,7 +109,7 @@ function syncCentralCurrentWeek_(device, weekDate, onlyAccount) {
       }
 
       if (pending) {
-        var check = centralApiGetOperation_(token, String(prior.OperationID));
+        var check = centralApiGetOperation_(String(prior.OperationID));
         if (!check.ok) {
           results.push({syncKey:item.syncKey, error:check.error || 'No se pudo verificar la operación pendiente.'});
           return;
@@ -159,7 +127,7 @@ function syncCentralCurrentWeek_(device, weekDate, onlyAccount) {
           return;
         }
         if (Math.abs(num_(account.balance) - num_(prior.BeforeBalance)) > 0.005) {
-          results.push({syncKey:item.syncKey, error:'Saldo de Central cambió durante una operación pendiente; requiere revisión manual.'});
+          results.push({syncKey:item.syncKey, error:'El saldo del archivo global cambió durante una operación pendiente; requiere revisión manual.'});
           return;
         }
       }
@@ -180,7 +148,7 @@ function syncCentralCurrentWeek_(device, weekDate, onlyAccount) {
         centralUpsertSyncState_(weekDate, item, desiredAmount, syncedBefore, delta, 'PENDING', operation);
         SpreadsheetApp.flush();
       }
-      var updated = centralApiPost_(token, {
+      var updated = centralApiPost_({
         action:'updateBalance',
         id:centralId,
         balance:afterBalance,
@@ -195,7 +163,7 @@ function syncCentralCurrentWeek_(device, weekDate, onlyAccount) {
 
       if (!updated.ok) {
         // La respuesta puede perderse después de la escritura: se conserva
-        // PENDING para verificar el identificador en Central antes de reintentar.
+        // PENDING para verificar el historial del archivo global antes de reintentar.
         results.push({syncKey:item.syncKey, error:updated.error || 'No se pudo actualizar Central'});
         return;
       }
@@ -370,11 +338,18 @@ function centralCashReceivedForWeek_(payments,start,end) {
 function centralDesiredItems_(model, mappings) {
   var out = [];
 
-  ['omoda','coopealianza','u'].forEach(function(cuentaId) {
+  ['casa','omoda','coopealianza','u'].forEach(function(cuentaId) {
     var expense = model.accounts.find(function(a){return a.id === cuentaId;});
     var map = mappings.find(function(m){
       return String(m.CuentaID || '') === cuentaId && !String(m.VehicleID || '');
     });
+    // La copia existente no tenía Cuentas casa en Central_Map.
+    if (!map && cuentaId === 'casa') map = {SyncKey:'casa',CuentaID:'casa',CentralAccountID:'cuentas_casa'};
+    if (map && cuentaId === 'u') {
+      var weekNumber = Math.ceil(Number(String(model.weekDate || '').slice(8,10)) / 7);
+      if (weekNumber < 1 || weekNumber > 5) return;
+      map = Object.assign({}, map, {CentralAccountID:'semana_' + weekNumber});
+    }
     if (expense && map) {
       out.push({
         syncKey:String(map.SyncKey || cuentaId),
@@ -512,56 +487,76 @@ function centralUpsertSyncState_(weekDate, item, desired, synced, delta, status,
   else sh.getRange(row,1,1,data.length).setValues([data]);
 }
 
-function centralApiGetOperation_(token, operationId) {
-  if (isTestMode_()) return {ok:false,error:'Central real bloqueada en modo de prueba.'};
-  var url = centralConfigValue_('CENTRAL_API_URL','');
-  if (!url) return {ok:false,error:'Falta CENTRAL_API_URL.'};
-  try {
-    var response = UrlFetchApp.fetch(url + '?action=getOperation&token=' + encodeURIComponent(token) +
-      '&operationId=' + encodeURIComponent(operationId), {method:'get',muteHttpExceptions:true});
-    return JSON.parse(response.getContentText());
-  } catch (e) {
-    return {ok:false,error:String(e && e.message || e)};
-  }
+// Estos nombres se conservan para el cálculo existente; todas las operaciones
+// leen y escriben el archivo global directamente, sin llamadas HTTP a Central.
+function centralGlobalSheets_() {
+  var ss = SpreadsheetApp.openById(globalSpreadsheetId_());
+  var accounts = ss.getSheetByName('Cuentas mensuales');
+  var history = ss.getSheetByName('Historial');
+  if (!accounts || !history) throw new Error('Faltan Cuentas mensuales o Historial en el archivo global.');
+  return {accounts:accounts,history:history};
 }
 
-function centralApiGetAccounts_(token) {
-  if (isTestMode_()) return {ok:false,error:'Central real bloqueada en modo de prueba.'};
-  var url = centralConfigValue_('CENTRAL_API_URL','');
-  if (!url) return {ok:false,error:'Falta CENTRAL_API_URL.'};
-  try {
-    var response = UrlFetchApp.fetch(url + '?action=getAccounts&token=' + encodeURIComponent(token), {
-      method:'get',
-      muteHttpExceptions:true
-    });
-    var data = JSON.parse(response.getContentText());
-    if (!data.ok) return {ok:false,error:data.error || 'Central rechazó getAccounts'};
-    return {ok:true,accounts:Array.isArray(data.accounts)?data.accounts:[]};
-  } catch (e) {
-    return {ok:false,error:String(e && e.message || e)};
+function centralGlobalAccount_(sheet, id) {
+  var last = sheet.getLastRow();
+  if (last < 4) return null;
+  var rows = sheet.getRange(4,1,last-3,5).getValues();
+  var key = String(id || '').trim().toLowerCase();
+  for (var i=0;i<rows.length;i++) {
+    if (String(rows[i][3] || '').trim().toLowerCase() === key &&
+        String(rows[i][2] || '').trim().toLowerCase() === 'cuenta') {
+      return {row:i+4,id:String(rows[i][3]),name:String(rows[i][0]),balance:num_(rows[i][1])};
+    }
   }
+  return null;
 }
 
-function centralApiPost_(token, payload) {
-  if (isTestMode_()) return {ok:false,error:'Central real bloqueada en modo de prueba.'};
-  var url = centralConfigValue_('CENTRAL_API_URL','');
-  if (!url) return {ok:false,error:'Falta CENTRAL_API_URL.'};
+function centralApiGetOperation_(operationId) {
   try {
-    var body = {};
-    Object.keys(payload || {}).forEach(function(k){body[k]=payload[k];});
-    body.token = token;
-    var response = UrlFetchApp.fetch(url, {
-      method:'post',
-      contentType:'text/plain;charset=utf-8',
-      payload:JSON.stringify(body),
-      muteHttpExceptions:true
-    });
-    var data = JSON.parse(response.getContentText());
-    if (!data.ok) return {ok:false,error:data.error || data.message || 'Central rechazó la operación'};
-    return data;
-  } catch (e) {
-    return {ok:false,error:String(e && e.message || e)};
-  }
+    var history = centralGlobalSheets_().history, last = history.getLastRow();
+    if (last < 2) return {ok:true,found:false};
+    var ids = history.getRange(2,2,last-1,1).getValues();
+    for (var i=ids.length-1;i>=0;i--) {
+      if (String(ids[i][0] || '') !== String(operationId)) continue;
+      var row = history.getRange(i+2,5,1,4).getValues()[0];
+      return {ok:true,found:true,operation:{accountId:String(row[0]),movement:num_(row[2]),newBalance:num_(row[3])}};
+    }
+    return {ok:true,found:false};
+  } catch (e) { return {ok:false,error:String(e && e.message || e)}; }
+}
+
+function centralApiGetAccounts_() {
+  try {
+    var sheet = centralGlobalSheets_().accounts, last = sheet.getLastRow();
+    if (last < 4) return {ok:true,accounts:[]};
+    return {ok:true,accounts:sheet.getRange(4,1,last-3,5).getValues()
+      .filter(function(r){return String(r[3] || '') && String(r[2] || '').toLowerCase() === 'cuenta';})
+      .map(function(r){return {id:String(r[3]),name:String(r[0]),balance:num_(r[1])};})};
+  } catch (e) { return {ok:false,error:String(e && e.message || e)}; }
+}
+
+function centralApiPost_(payload) {
+  try {
+    if (payload.action !== 'updateBalance') return {ok:false,error:'Solo se permite sumar a una cuenta existente.'};
+    var sheets = centralGlobalSheets_();
+    var account = centralGlobalAccount_(sheets.accounts,payload.id);
+    if (!account) return {ok:false,error:'Cuenta no encontrada en el archivo global: ' + payload.id};
+    var ctx = payload.context || {};
+    if (!ctx.operationId || !isFinite(Number(payload.balance))) return {ok:false,error:'Operación o saldo inválido.'};
+    var previous = centralApiGetOperation_(ctx.operationId);
+    if (!previous.ok) return previous;
+    if (previous.found) return {ok:true,alreadyApplied:true,balance:account.balance};
+    if (Math.abs(account.balance - num_(ctx.expectedBalance)) > 0.005) {
+      return {ok:false,error:'El saldo del archivo global cambió; recargá antes de aplicar el aporte.'};
+    }
+    var target = centralRound_(payload.balance), movement = centralRound_(target-account.balance);
+    if (target < 0 || Math.abs(movement) < 0.005) return {ok:false,error:'El movimiento no cambia un saldo válido.'};
+    sheets.accounts.getRange(account.row,2).setValue(target);
+    sheets.history.appendRow([new Date(),ctx.operationId,'Aporte Flotilla',account.name,account.id,
+      account.balance,movement,target,String(ctx.month || ''),String(ctx.week || '')]);
+    SpreadsheetApp.flush();
+    return {ok:true,balance:target,movement:movement};
+  } catch (e) { return {ok:false,error:String(e && e.message || e)}; }
 }
 
 function centralFindAccount_(accounts, id) {
