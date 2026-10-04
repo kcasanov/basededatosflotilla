@@ -139,6 +139,7 @@ async function savePaymentV3() {
   if (pending <= .01) return alert('Esta cuota ya está completamente pagada.');
   if (amount > pending + .01) return alert(`El máximo que falta de esta cuota es ${money(pending)}. Si existe dinero adicional, registralo en la siguiente semana correspondiente.`);
   $('savePaymentButton').disabled = true;
+  const beforeCentral = centralFundingSnapshot();
   try {
     const after = st.received + amount;
     const res = await backend('markPayment', {
@@ -149,6 +150,7 @@ async function savePaymentV3() {
     if (!res.ok) throw new Error(res.message || 'No se pudo registrar el abono');
     closePaymentV3(); await loadProductionData(); renderAll();
     window.refreshPlanInBackgroundV34?.();
+    await offerCentralFunding(beforeCentral);
   } catch (e) { alert(e.message || 'Error registrando el abono'); }
   finally { $('savePaymentButton').disabled = false; }
 }
@@ -371,10 +373,12 @@ async function saveUberWeekV3(vehicleId) {
     ajustesAnteriores:Number(fieldV3(form,'adjustments').value||0),efectivoChofer:Math.abs(Number(fieldV3(form,'cash').value||0)),ocrTexto:fieldV3(form,'ocrText').value||''
   };
   if(!confirm(`Guardar actualización Uber para ${fmtShort(date)}?`))return;
+  const beforeCentral=centralFundingSnapshot();
   try{
     const r=await backend('saveUberWeek',payload); if(!r.ok)throw new Error(r.message||'No se pudo guardar');
     await loadProductionData(); await loadPlanDashboardV3(true); renderAll();
     alert(`Semana guardada. Disponible Uber: ${money(r.rawAvailable)} · saldo arrastrado: ${money(r.carryIn||0)} · pendiente de esa cuota: ${money(r.targetPending)}${Number(r.unapplied||0)>0?' · sobrante no arrastrado: '+money(r.unapplied):''}.`);
+    await offerCentralFunding(beforeCentral);
   }catch(e){alert(e.message||'Error guardando Uber');}
 }
 

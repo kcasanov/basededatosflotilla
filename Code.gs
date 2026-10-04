@@ -142,7 +142,7 @@ function protected_(body,handler){
 
 function bootstrap_(){
   const ss=SpreadsheetApp.openById(mainSpreadsheetId_());
-  return{ok:true,capabilities:{safeUber:true,specificManualReversal:true},vehicles:sheetObjects_(ss.getSheetByName('Vehiculos')),accounts:sheetObjects_(ss.getSheetByName('Cuentas')),payments:sheetObjects_(ss.getSheetByName('Pagos_Reales')),plans:sheetObjects_(ss.getSheetByName('Plan_Pagos')),reversedPayments:reversedPayments_(ss),uberWeeks:sheetObjects_(ss.getSheetByName('Uber_Semanas'))};
+  return{ok:true,capabilities:{safeUber:true,specificManualReversal:true,centralSyncReady:false},vehicles:sheetObjects_(ss.getSheetByName('Vehiculos')),accounts:sheetObjects_(ss.getSheetByName('Cuentas')),payments:sheetObjects_(ss.getSheetByName('Pagos_Reales')),plans:sheetObjects_(ss.getSheetByName('Plan_Pagos')),reversedPayments:reversedPayments_(ss),uberWeeks:sheetObjects_(ss.getSheetByName('Uber_Semanas'))};
 }
 
 function markPayment_(body,device){

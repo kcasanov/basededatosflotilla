@@ -218,8 +218,15 @@ eq(syncTest.syncCentralCurrentWeek_('test','2026-09-29','omoda').results[0].stat
 eq([syncBalance,syncPosts,syncState.OperationID],[150000,2,retryId],'safe retry keeps original operation id');
 eq(syncTest.syncCentralCurrentWeek_('test','2026-09-29').ok,false,'Central refuses unconfirmed bulk sync');
 run("planDashboardV3=[];planDashboardLoadedV3=false;globalThis.planRenders=0;backend=async action=>({ok:true,cards:[{vehicleId:'i10',integrationActive:true,legacyPending:[{date:'2026-06-02',quota:100,week:1}]}]});renderWeek=()=>planRenders++;renderSummary=()=>planRenders++;renderVehicles=()=>planRenders++;");
-context.loadPlanDashboardV3(true).then(()=>{
+context.loadPlanDashboardV3(true).then(async()=>{
   eq(run('planDashboardLoadedV3'),true,'background plan marked ready');
   eq(run('planRenders'),3,'pending sections refreshed after plan load');
+  run("rowsForTuesday=()=>[];currentExpenses=()=>[{id:'omoda',name:'Omoda',need:50000,assigned:0,priority:'critical',order:1,type:'weekly'},{id:'pago_deudas',name:'Pago de deudas',need:0,assigned:0,priority:'low',order:2,type:'remainder'}];receivedCashForWeek=()=>50000;backendCapabilities={centralSyncReady:true};globalThis.centralCalls=[];backend=async(action,payload)=>{centralCalls.push({action,payload});return {ok:true,results:[]};};");
+  eq(run("centralFundingSnapshot().omoda.ready"),true,'fully funded account is eligible for confirmation');
+  eq(run("Object.keys(centralFundingSnapshot()).includes('pago_deudas')"),false,'debt remnant never prompts for Central');
+  await context.offerCentralFunding({omoda:{ready:false}});
+  eq(run("centralCalls.map(x=>[x.action,x.payload.cuentaId,x.payload.weekDate])"),[['syncCentral','omoda','2026-09-29']],'confirmation submits only selected account');
+  await context.offerCentralFunding({omoda:{ready:true}});
+  eq(run('centralCalls.length'),1,'already funded account does not prompt again');
   console.log(`${checks} regression checks passed; no external API was called.`);
 }).catch(error=>{console.error(error);process.exitCode=1;});

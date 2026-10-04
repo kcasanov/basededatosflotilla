@@ -118,7 +118,7 @@ function getDeviceId() {
   return id;
 }
 async function backend(action, payload = {}) {
-  if(action==='syncCentral')return {ok:true,disabled:true};
+  if(action==='syncCentral' && (typeof backendCapabilities === 'undefined' || !backendCapabilities.centralSyncReady))return {ok:true,disabled:true};
   const res = await fetch(BACKEND_URL, {
     method: 'POST',
     signal: AbortSignal.timeout(45000),
@@ -342,6 +342,35 @@ function allocateExpenses(rows, available) {
   if (rem) { rem.need = Math.max(0, remaining); rem.assigned = Math.max(0, remaining); remaining = 0; }
   return rows;
 }
+function centralFundingSnapshot() {
+  const tuesday = operationalTuesday();
+  const rows = rowsForTuesday(tuesday);
+  const expenses = allocateExpenses(currentExpenses(rows, tuesday), receivedCashForWeek(tuesday));
+  return Object.fromEntries(expenses
+    .filter(e => ['omoda','coopealianza','u','seguros'].includes(e.id))
+    .map(e => [e.id, {
+      name:e.name,
+      ready:e.need > .005 && e.assigned >= e.need - .005,
+      amount:Math.ceil(Math.max(0,e.need) / 500) * 500
+    }]));
+}
+async function offerCentralFunding(before) {
+  if (typeof backendCapabilities === 'undefined' || !backendCapabilities.centralSyncReady) return;
+  const after = centralFundingSnapshot();
+  for (const [cuentaId, account] of Object.entries(after)) {
+    if (!account.ready || before?.[cuentaId]?.ready) continue;
+    if (!confirm(`Se cubrió ${account.name} (${money(account.amount)}). ¿Deseás reflejarlo en la Central de pagos?`)) continue;
+    try {
+      const result = await backend('syncCentral', {
+        sessionToken:sessionStorage.getItem(SESSION_KEY),
+        weekDate:isoDate(operationalTuesday()), cuentaId
+      });
+      if (!result.ok || result.disabled || (result.results || []).some(x => x.error)) {
+        throw new Error(result.message || (result.results || []).find(x => x.error)?.error || 'No se pudo actualizar Central.');
+      }
+    } catch (error) { alert(error.message || 'No se pudo actualizar Central.'); }
+  }
+}
 function renderExpenseAllocation(expenses, available) {
   const used = expenses.reduce((s, e) => s + e.assigned, 0);
   const gap = expenses.filter(e => e.type !== 'remainder').reduce((s, e) => s + Math.max(0, e.need - e.assigned), 0);
@@ -416,6 +445,7 @@ async function markWeekRowPaid(encodedKey) {
   const row = rowsForCurrentWeek().find(r => r.key === key);
   if (!row) return;
   const sessionToken = sessionStorage.getItem(SESSION_KEY);
+  const beforeCentral = centralFundingSnapshot();
   try {
     const response = await backend('markPayment', {
       sessionToken, planId: row.planId || row.key, vehicleId: row.vehicleId,
@@ -423,8 +453,8 @@ async function markWeekRowPaid(encodedKey) {
       montoEsperado: row.amount, montoRecibido: row.amount, estado: 'PAGADO'
     });
     if (!response.ok) throw new Error(response.message || 'No se pudo registrar el pago');
-    paymentState[key] = { received: row.amount, realDate: isoDate(crTodayUTC()), status: 'PAGADO', pagoId: response.pagoId };
-    renderWeek(); renderVehicles();
+    await loadProductionData(); renderAll();
+    await offerCentralFunding(beforeCentral);
   } catch (e) { alert(e.message || 'Error registrando el pago'); }
 }
 async function unmarkPaid(encodedKey) {
@@ -460,6 +490,7 @@ async function confirmLatePayment() {
   const mode = $('lateAllocationMode').value;
   const note = 'Asignación: ' + mode + (mode === 'manual' ? ' · ' + $('manualLateAccount').value : '');
   const sessionToken = sessionStorage.getItem(SESSION_KEY);
+  const beforeCentral = centralFundingSnapshot();
   try {
     const response = await backend('markPayment', {
       sessionToken, planId: r.planId || r.key, vehicleId: r.vehicleId,
@@ -467,8 +498,8 @@ async function confirmLatePayment() {
       montoEsperado: r.amount, montoRecibido: r.amount, estado: 'PAGADO_ATRASADO', nota: note
     });
     if (!response.ok) throw new Error(response.message || 'No se pudo registrar');
-    paymentState[r.key] = { received: r.amount, realDate: isoDate(crTodayUTC()), status: 'PAGADO_ATRASADO', pagoId: response.pagoId, note };
-    closeLateModal(); renderWeek(); renderVehicles();
+    closeLateModal(); await loadProductionData(); renderAll();
+    await offerCentralFunding(beforeCentral);
   } catch (e) { alert(e.message || 'Error registrando el pago atrasado'); }
 }
 
