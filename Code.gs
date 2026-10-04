@@ -191,7 +191,7 @@ function unmarkPayment_(body,device){
       let globalAdjustment={ok:true,disabled:true,weekDate:realDate||'',message:'Sin aportes globales que ajustar.'};
       try{
         if(typeof reconcileGlobalAfterPaymentReversal_==='function'){
-          globalAdjustment=reconcileGlobalAfterPaymentReversal_(device,realDate,true);
+          globalAdjustment=reconcileGlobalAfterPaymentReversal_(device,date,realDate,true);
         }
       }catch(err){
         globalAdjustment={ok:false,weekDate:realDate||'',error:String(err&&err.message||err)};
