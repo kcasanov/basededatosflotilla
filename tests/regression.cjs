@@ -245,6 +245,16 @@ const retryId=syncState.OperationID;
 syncPostMode='success';
 eq(syncTest.syncCentralCurrentWeek_('test','2026-09-29','omoda').results[0].status,'OK','safe retry applies an operation that never reached Central');
 eq([syncBalance,syncPosts,syncState.OperationID],[150000,2,retryId],'safe retry keeps original operation id');
+syncNeed=0;syncOperation=null;syncPostMode='success';
+const decrease=syncTest.syncCentralCurrentWeek_('test','2026-09-29','omoda');
+eq(decrease.results[0].delta,-50000,'funding decrease creates a negative correction');
+eq([decrease.totalRemoved,syncBalance,syncPosts],[50000,100000,3],'negative correction restores the global balance once');
+syncNeed=0;syncBalance=150000;syncPosts=0;syncOperation=null;
+syncState={DesiredAmount:50000,SyncedAmount:50000,Delta:50000,Status:'OK',OperationID:'prior',BeforeBalance:100000,TargetBalance:150000};
+syncTest.centralCurrentTuesday_=()=> '2026-09-29';
+syncTest.centralSyncedAccountIdsForWeek_=()=>['omoda'];
+const reversalReconcile=syncTest.reconcileGlobalAfterPaymentReversal_('test','2026-10-03',false);
+eq([reversalReconcile.ok,reversalReconcile.weekDate,reversalReconcile.totalRemoved,syncBalance],[true,'2026-09-29',50000,100000],'payment reversal reconciles already-authorized global funding');
 eq(syncTest.syncCentralCurrentWeek_('test','2026-09-29').ok,false,'Central refuses unconfirmed bulk sync');
 run("planDashboardV3=[];planDashboardLoadedV3=false;globalThis.planRenders=0;backend=async action=>({ok:true,cards:[{vehicleId:'i10',integrationActive:true,legacyPending:[{date:'2026-06-02',quota:100,week:1}]}]});renderWeek=()=>planRenders++;renderSummary=()=>planRenders++;renderVehicles=()=>planRenders++;");
 context.loadPlanDashboardV3(true).then(async()=>{
