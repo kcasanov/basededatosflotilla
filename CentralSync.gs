@@ -52,7 +52,7 @@ function syncCentralCurrentWeekSafe_(device, weekDate) {
   }
 }
 
-function syncCentralCurrentWeek_(device, weekDate, onlyAccount) {
+function syncCentralCurrentWeek_(device, weekDate, onlyAccount, lockAlreadyHeld) {
   weekDate = ymd_(weekDate) || centralCurrentTuesday_();
   if (!globalSyncReady_()) return {ok:true, disabled:true, weekDate:weekDate, message:'Aportes al archivo global desactivados.'};
   if (!['casa','omoda','coopealianza','u','seguros'].includes(String(onlyAccount || ''))) {
@@ -64,8 +64,11 @@ function syncCentralCurrentWeek_(device, weekDate, onlyAccount) {
     return {ok:true, skipped:true, weekDate:weekDate, message:'Semana anterior al inicio de sincronización.'};
   }
 
-  var lock = LockService.getScriptLock();
-  if (!lock.tryLock(5000)) return {ok:false, busy:true, weekDate:weekDate, message:'Ya hay otra sincronización en proceso.'};
+  var lock = null;
+  if (!lockAlreadyHeld) {
+    lock = LockService.getScriptLock();
+    if (!lock.tryLock(5000)) return {ok:false, busy:true, weekDate:weekDate, message:'Ya hay otra sincronización en proceso.'};
+  }
   try {
     var model = centralBuildWeekModel_(weekDate);
     var mappings = centralActiveMappings_();
@@ -193,8 +196,62 @@ function syncCentralCurrentWeek_(device, weekDate, onlyAccount) {
 
     return centralSummarizeResult_({ok:true, configured:true, weekDate:weekDate, results:results});
   } finally {
-    lock.releaseLock();
+    if (lock) lock.releaseLock();
   }
+}
+
+function centralSyncedAccountIdsForWeek_(weekDate) {
+  var ss = SpreadsheetApp.openById(mainSpreadsheetId_());
+  var sh = ss.getSheetByName('Central_Sync');
+  if (!sh || sh.getLastRow() < 2) return [];
+  var allowed = ['casa','omoda','coopealianza','u','seguros'];
+  var seen = {};
+  return sheetObjects_(sh).filter(function(row) {
+    if (ymd_(row.WeekDate) !== weekDate) return false;
+    var cuentaId = String(row.CuentaID || '').trim();
+    if (allowed.indexOf(cuentaId) < 0) return false;
+    var active = Math.abs(num_(row.SyncedAmount)) > 0.005 || String(row.Status || '').toUpperCase() === 'PENDING';
+    if (!active || seen[cuentaId]) return false;
+    seen[cuentaId] = true;
+    return true;
+  }).map(function(row) {
+    return String(row.CuentaID || '').trim();
+  });
+}
+
+function reconcileGlobalAfterPaymentReversal_(device, realDate, lockAlreadyHeld) {
+  var weekDate = centralCurrentTuesday_(ymd_(realDate));
+  if (!globalSyncReady_()) {
+    return {ok:true, disabled:true, weekDate:weekDate, results:[], totalRemoved:0, message:'Aportes al archivo global desactivados.'};
+  }
+
+  var accounts = centralSyncedAccountIdsForWeek_(weekDate);
+  if (!accounts.length) {
+    return {ok:true, weekDate:weekDate, results:[], totalRemoved:0, message:'No había aportes autorizados en esa semana.'};
+  }
+
+  var results = [], totalRemoved = 0, errors = [];
+  accounts.forEach(function(cuentaId) {
+    var response = syncCentralCurrentWeek_(device || 'system', weekDate, cuentaId, !!lockAlreadyHeld);
+    results.push({cuentaId:cuentaId, response:response});
+    totalRemoved += num_(response && response.totalRemoved);
+    if (!response || response.ok === false || (response.results || []).some(function(r){return !!r.error;})) {
+      errors.push({
+        cuentaId:cuentaId,
+        message:response && (response.message || (response.results || []).find(function(r){return r.error;})?.error) || 'No se pudo reconciliar.'
+      });
+    }
+  });
+
+  return {
+    ok:errors.length===0,
+    weekDate:weekDate,
+    accounts:accounts,
+    results:results,
+    totalRemoved:centralRound_(totalRemoved),
+    errors:errors,
+    message:errors.length ? 'El pago se reversó, pero uno o más aportes globales quedaron pendientes de revisión.' : 'Aportes globales reconciliados.'
+  };
 }
 
 function centralSummarizeResult_(result) {
