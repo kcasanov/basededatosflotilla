@@ -36,3 +36,11 @@ Ejecutar npm test o node tests/regression.cjs. Son pruebas aisladas con hojas si
 1. Ejecutar npm test y reiniciar npm start después de actualizar el código local.
 2. Actualizar manualmente Code.gs y CentralSync.gs en el proyecto Apps Script y su versión publicada para habilitar los cambios del backend. No publicar ni reactivar Netlify.
 3. Prueba visual breve: Semana actual; historial y cargar más; histórico con un solo vehículo pendiente; captura OCR. No guardar pagos de prueba en datos reales.
+
+## Pruebas aisladas de Apps Script y Central
+- Auditoría del 04/10/2026: ningún guardado de pago invoca la sincronización con Central; cliente, servidor y Apps Script responden que está pausada. La hoja `Central_Sync` original solo tiene encabezados. `Central_Map` relaciona Omoda, Coopealianza y U directamente, y seguros por vehículo; no relaciona la cuota completa de cada carro con una cuenta individual de Central.
+- Antes de probar escrituras, crear copias separadas de **Base de datos flotilla** y **Plan de pagos**, y un proyecto Apps Script de prueba con `Code.gs` y `CentralSync.gs`. No usar el proyecto Apps Script publicado ni las hojas originales.
+- En las propiedades del proyecto de prueba configurar `FLOTILLA_TEST_MODE=TRUE`, `FLOTILLA_DATA_SPREADSHEET_ID=<ID de la copia de flotilla>` y `FLOTILLA_PLAN_SPREADSHEET_ID=<ID de la copia de plan>`. Si falta una copia o se usa un ID de producción, el backend de prueba rechaza el acceso. Configurar también un PIN de prueba propio; no copiar secretos de producción.
+- Publicar **solo el Apps Script de prueba** como aplicación web y copiar su URL `/exec`. Esto no publica en Netlify. La sincronización con Central continúa apagada; sus cálculos se pueden probar con datos simulados sin llamar a la Central real.
+- En PowerShell, antes de `npm start`, usar `$env:FLOTILLA_TEST_MODE='1'` y `$env:FLOTILLA_TEST_APPS_SCRIPT_URL='<URL /exec del proyecto de prueba>'`. El servidor local rechaza la URL del Apps Script de producción cuando está en modo de prueba.
+- Verificar en Netlify que **Build status** sea **Stopped builds**. Detener solo la publicación automática permite que se sigan ejecutando builds. El `netlify.toml` actual aborta su build, pero no sustituye el control del sitio.

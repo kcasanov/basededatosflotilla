@@ -79,11 +79,29 @@ const payHeaders=['PagoID','PlanID','VehicleID','FechaProgramada','FechaReal','M
 const uberHeaders=['UberSemanaID','VehicleID','PlanSheetTab','Semana','FechaProgramada','GananciasTotales','DevolucionesGastos','AjustesAnteriores','SaldoArrastradoEntrada','ReembolsosTotal','EfectivoChofer','Cuota','SaldoSemana','MontoDisponibleBruto','Estado','OCRTexto','CreatedAt','UpdatedAt'];
 const vehicle={VehicleID:'i10',TipoCobro:'UBER',PlanSheetTab:'i10',PlanIntegracionActiva:true,CuotaSemanal:100,FechaInicio:'2026-09-15'};
 let uuid=0;
+const scriptProps=new Map();
 const mainSheets={Pagos_Reales:new Sheet([payHeaders]),Uber_Semanas:new Sheet([uberHeaders]),Historial:new Sheet([['ID','Fecha','Entidad','EntidadID','Accion','Detalle','Usuario','Origen']]),Plan_Pagos:new Sheet([['PlanID','VehicleID','Semana','FechaProgramada','CuotaTotal']])};
 const external=new Sheet([['Semana',777],['Ganancias',0],['Reembolsos',0],['Efectivo',0],['Cuota',100],['Saldo','=B2+B3-B4-B5'],[],['Semana','Fecha','Cuota Total','Estado'],[1,'2026-09-15',100,'Pagado'],[2,'2026-09-22',100,'Pendiente'],[3,'2026-09-29',100,'Pendiente']]);
 const main={getSheetByName:n=>mainSheets[n]};
-const server=vm.createContext({console,Date,JSON,Number,isFinite,SpreadsheetApp:{openById:id=>id==='main'?main:{getSheetByName:()=>external},flush(){}},Utilities:{formatDate:d=>new Date(d).toISOString().slice(0,10),getUuid:()=>String(++uuid)}});
+const server=vm.createContext({console,Date,JSON,Number,isFinite,SpreadsheetApp:{openById:id=>id==='main'?main:{getSheetByName:()=>external},flush(){}},PropertiesService:{getScriptProperties:()=>({getProperty:key=>scriptProps.get(key)||null})},Utilities:{formatDate:d=>new Date(d).toISOString().slice(0,10),getUuid:()=>String(++uuid)}});
 vm.runInContext(fs.readFileSync('Code.gs','utf8'),server);
+vm.runInContext(fs.readFileSync('CentralSync.gs','utf8'),server);
+eq(server.syncCentralCurrentWeek_('test','2026-09-29').disabled,true,'Central remains disabled');
+for (const [day,week] of [['2026-10-04','2026-09-29'],['2026-10-05','2026-10-06'],['2026-10-06','2026-10-06']]) eq(server.centralCurrentTuesday_(day),week,'Central uses operational week');
+scriptProps.set('FLOTILLA_TEST_MODE','TRUE');
+eq(server.centralApiGetAccounts_('test').ok,false,'test mode blocks Central reads');
+eq(server.centralApiPost_('test',{action:'updateBalance'}).ok,false,'test mode blocks Central writes');
+assert.throws(()=>server.mainSpreadsheetId_(),/configure una copia distinta/); checks++;
+scriptProps.set('FLOTILLA_DATA_SPREADSHEET_ID',vm.runInContext('SPREADSHEET_ID',server));
+assert.throws(()=>server.mainSpreadsheetId_(),/configure una copia distinta/); checks++;
+scriptProps.set('FLOTILLA_DATA_SPREADSHEET_ID','main');
+assert.throws(()=>server.planSpreadsheetId_(),/configure una copia distinta/); checks++;
+scriptProps.set('FLOTILLA_PLAN_SPREADSHEET_ID',vm.runInContext('PLAN_PAGOS_FALLBACK_ID',server));
+assert.throws(()=>server.planSpreadsheetId_(),/configure una copia distinta/); checks++;
+scriptProps.set('FLOTILLA_PLAN_SPREADSHEET_ID','external');
+eq(server.mainSpreadsheetId_(),'main','test mode uses copied main sheet');
+eq(server.planSpreadsheetId_(),'external','test mode uses copied plan sheet');
+scriptProps.clear();
 for (const [today,expected] of [['2026-10-04',['2026-09-29']],['2026-10-06',['2026-09-29']],['2026-10-07',['2026-09-29','2026-10-06']]]) {
   eq(server.pendingDueObligations_([{date:'2026-09-29',state:'Pendiente'},{date:'2026-10-06',state:'Pendiente'},{date:'2026-09-22',state:'Pagado'}],today).map(r=>r.date),expected,'backend sends only due pending weeks');
 }

@@ -44,6 +44,13 @@ function json_(obj) {
   return ContentService.createTextOutput(JSON.stringify(obj)).setMimeType(ContentService.MimeType.JSON);
 }
 function props_() { return PropertiesService.getScriptProperties(); }
+function isTestMode_() { return String(props_().getProperty('FLOTILLA_TEST_MODE') || '').toUpperCase() === 'TRUE'; }
+function mainSpreadsheetId_() {
+  if (!isTestMode_()) return SPREADSHEET_ID;
+  const id = String(props_().getProperty('FLOTILLA_DATA_SPREADSHEET_ID') || '').trim();
+  if (!id || id === SPREADSHEET_ID) throw new Error('Pruebas: configure una copia distinta de Base de datos flotilla.');
+  return id;
+}
 function cache_() { return CacheService.getScriptCache(); }
 function hash_(text) {
   const bytes = Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256, text, Utilities.Charset.UTF_8);
@@ -134,7 +141,7 @@ function protected_(body,handler){
 }
 
 function bootstrap_(){
-  const ss=SpreadsheetApp.openById(SPREADSHEET_ID);
+  const ss=SpreadsheetApp.openById(mainSpreadsheetId_());
   return{ok:true,capabilities:{safeUber:true,specificManualReversal:true},vehicles:sheetObjects_(ss.getSheetByName('Vehiculos')),accounts:sheetObjects_(ss.getSheetByName('Cuentas')),payments:sheetObjects_(ss.getSheetByName('Pagos_Reales')),plans:sheetObjects_(ss.getSheetByName('Plan_Pagos')),reversedPayments:reversedPayments_(ss),uberWeeks:sheetObjects_(ss.getSheetByName('Uber_Semanas'))};
 }
 
@@ -148,7 +155,7 @@ function markPayment_(body,device){
     const obligation=legacyObligationsTo_(tab,date).find(r=>r.date===date);
     if(!obligation||!pendingStatus_(obligation.state))return{ok:false,message:'Esta cuota histórica no está pendiente en el plan.'};
   }
-  const ss=SpreadsheetApp.openById(SPREADSHEET_ID),sh=ss.getSheetByName('Pagos_Reales'),already=sumReceived_(ss,vehicleId,date),remaining=expected>0?Math.max(0,expected-already):requested;
+  const ss=SpreadsheetApp.openById(mainSpreadsheetId_()),sh=ss.getSheetByName('Pagos_Reales'),already=sumReceived_(ss,vehicleId,date),remaining=expected>0?Math.max(0,expected-already):requested;
   if(expected>0&&remaining<=0.005)return{ok:false,message:'Esta cuota ya está completamente pagada.'};
   const amount=expected>0?Math.min(requested,remaining):requested,now=new Date(),pagoId=body.pagoId||Utilities.getUuid(),after=already+amount,state=expected>0&&after>=expected-0.01?'PAGADO':'PARCIAL';
   sh.appendRow([pagoId,body.planId||'',vehicleId,date,body.fechaReal||Utilities.formatDate(now,TZ,'yyyy-MM-dd'),expected,amount,state,body.nota||'',now,now,body.origen||'MANUAL',body.uberSemanaId||'']);
@@ -157,7 +164,7 @@ function markPayment_(body,device){
   return{ok:true,pagoId:pagoId,amountApplied:amount,totalReceived:after,pending:expected>0?Math.max(0,expected-after):0,status:state};
 }
 function unmarkPayment_(body,device){
-  const ss=SpreadsheetApp.openById(SPREADSHEET_ID),sh=ss.getSheetByName('Pagos_Reales'),data=sh.getDataRange().getValues(),pagoId=String(body.pagoId||'');
+  const ss=SpreadsheetApp.openById(mainSpreadsheetId_()),sh=ss.getSheetByName('Pagos_Reales'),data=sh.getDataRange().getValues(),pagoId=String(body.pagoId||'');
   for(let r=data.length-1;r>=1;r--){
     if(String(data[r][0])===pagoId){
       if(String(data[r][11]||'MANUAL').toUpperCase()!=='MANUAL')return{ok:false,message:'Este pago debe corregirse desde Uber.'};
@@ -173,7 +180,7 @@ function unmarkPayment_(body,device){
 function createVehicle_(body,device){
   const payload=body.payload||{},v=payload.vehicle||{},c=payload.contract||{},projection=payload.projection||{},plan=Array.isArray(payload.plan)?payload.plan:[];
   if(!v.placa||!v.marca||!v.modelo||!c.cuota||!c.fechaFirma||!plan.length)return{ok:false,message:'Faltan datos requeridos del vehículo o del plan.'};
-  const ss=SpreadsheetApp.openById(SPREADSHEET_ID),vehicles=ss.getSheetByName('Vehiculos'),plans=ss.getSheetByName('Plan_Pagos'),now=new Date(),normalizedPlate=String(v.placa).trim().toUpperCase();
+  const ss=SpreadsheetApp.openById(mainSpreadsheetId_()),vehicles=ss.getSheetByName('Vehiculos'),plans=ss.getSheetByName('Plan_Pagos'),now=new Date(),normalizedPlate=String(v.placa).trim().toUpperCase();
   const existing=vehicles.getDataRange().getValues();
   for(let r=1;r<existing.length;r++)if(String(existing[r][2]).trim().toUpperCase()===normalizedPlate)return{ok:false,message:'Ya existe un vehículo con esa placa.'};
   const vehicleId='veh_'+normalizedPlate.replace(/[^A-Z0-9]/g,'_')+'_'+Date.now(),firstDate=plan[0].fecha||'',lastDate=plan[plan.length-1].fecha||'',displayName=String(v.marca)+' '+String(v.modelo);
@@ -186,7 +193,7 @@ function createVehicle_(body,device){
 
 function updateVehicleConfig_(body,device){
   const vehicleId=String(body.vehicleId||''); if(!vehicleId)return{ok:false,message:'VehicleID requerido.'};
-  const ss=SpreadsheetApp.openById(SPREADSHEET_ID),sh=ss.getSheetByName('Vehiculos'),values=sh.getDataRange().getValues(),headers=values[0].map(String),idx={}; headers.forEach((h,i)=>idx[h]=i);
+  const ss=SpreadsheetApp.openById(mainSpreadsheetId_()),sh=ss.getSheetByName('Vehiculos'),values=sh.getDataRange().getValues(),headers=values[0].map(String),idx={}; headers.forEach((h,i)=>idx[h]=i);
   let row=-1; for(let r=1;r<values.length;r++)if(String(values[r][idx.VehicleID])===vehicleId){row=r+1;break;}
   if(row<0)return{ok:false,message:'Vehículo no encontrado.'};
   const type=String(body.tipoCobro||'').toUpperCase(),op=String(body.operacionEstado||'ACTIVO').toUpperCase();
@@ -201,11 +208,16 @@ function updateVehicleConfig_(body,device){
 }
 
 function planSpreadsheetId_(){
-  const ss=SpreadsheetApp.openById(SPREADSHEET_ID),sh=ss.getSheetByName('Config'),rows=sheetObjects_(sh),match=rows.find(r=>String(r.Clave)==='PLAN_PAGOS_SPREADSHEET_ID');
+  if (isTestMode_()) {
+    const id = String(props_().getProperty('FLOTILLA_PLAN_SPREADSHEET_ID') || '').trim();
+    if (!id || id === PLAN_PAGOS_FALLBACK_ID) throw new Error('Pruebas: configure una copia distinta de Plan de pagos.');
+    return id;
+  }
+  const ss=SpreadsheetApp.openById(mainSpreadsheetId_()),sh=ss.getSheetByName('Config'),rows=sheetObjects_(sh),match=rows.find(r=>String(r.Clave)==='PLAN_PAGOS_SPREADSHEET_ID');
   return match&&match.Valor?String(match.Valor):PLAN_PAGOS_FALLBACK_ID;
 }
 function vehicleObjectById_(vehicleId){
-  const ss=SpreadsheetApp.openById(SPREADSHEET_ID),rows=sheetObjects_(ss.getSheetByName('Vehiculos')); return rows.find(r=>String(r.VehicleID)===String(vehicleId))||null;
+  const ss=SpreadsheetApp.openById(mainSpreadsheetId_()),rows=sheetObjects_(ss.getSheetByName('Vehiculos')); return rows.find(r=>String(r.VehicleID)===String(vehicleId))||null;
 }
 
 function legacyObligationsTo_(sh,targetDate){
@@ -224,7 +236,7 @@ function pendingDueObligations_(rows,todayIso){
 }
 
 function getPlanDashboard_(){
-  const main=SpreadsheetApp.openById(SPREADSHEET_ID),vehicles=sheetObjects_(main.getSheetByName('Vehiculos')).filter(v=>String(v.OperacionEstado||'ACTIVO').toUpperCase()==='ACTIVO');
+  const main=SpreadsheetApp.openById(mainSpreadsheetId_()),vehicles=sheetObjects_(main.getSheetByName('Vehiculos')).filter(v=>String(v.OperacionEstado||'ACTIVO').toUpperCase()==='ACTIVO');
   const legacy=SpreadsheetApp.openById(planSpreadsheetId_()),todayIso=Utilities.formatDate(new Date(),TZ,'yyyy-MM-dd'),cards=[];
   vehicles.forEach(v=>{
     const tab=String(v.PlanSheetTab||''),integration=bool_(v.PlanIntegracionActiva);
@@ -243,7 +255,7 @@ function getPlanDashboard_(){
 }
 
 function saveUberWeek_(body,device){
-  const main=SpreadsheetApp.openById(SPREADSHEET_ID),vehicleId=String(body.vehicleId||''),date=ymd_(body.fechaProgramada);
+  const main=SpreadsheetApp.openById(mainSpreadsheetId_()),vehicleId=String(body.vehicleId||''),date=ymd_(body.fechaProgramada);
   const later=sheetObjects_(main.getSheetByName('Uber_Semanas')).filter(r=>String(r.VehicleID)===vehicleId&&ymd_(r.FechaProgramada)>date).sort((a,b)=>ymd_(a.FechaProgramada).localeCompare(ymd_(b.FechaProgramada)));
   // Validate before removing any previous allocation.
   const vehicle=vehicleObjectById_(vehicleId);
@@ -279,7 +291,7 @@ function saveUberWeekCore_(body,device){
   const vehicle=vehicleObjectById_(vehicleId); if(!vehicle)return{ok:false,message:'Vehículo no encontrado.'};
   if(String(vehicle.TipoCobro||'').toUpperCase()!=='UBER')return{ok:false,message:'Este vehículo no está configurado como Uber.'};
   const tab=String(vehicle.PlanSheetTab||''); if(!tab)return{ok:false,message:'Falta configurar la pestaña de Plan de pagos.'};
-  const main=SpreadsheetApp.openById(SPREADSHEET_ID),legacy=SpreadsheetApp.openById(planSpreadsheetId_()),legacySh=legacy.getSheetByName(tab); if(!legacySh)return{ok:false,message:'No existe la pestaña '+tab+' en Plan de pagos.'};
+  const main=SpreadsheetApp.openById(mainSpreadsheetId_()),legacy=SpreadsheetApp.openById(planSpreadsheetId_()),legacySh=legacy.getSheetByName(tab); if(!legacySh)return{ok:false,message:'No existe la pestaña '+tab+' en Plan de pagos.'};
   const gains=num_(body.gananciasTotales),returns=num_(body.devolucionesGastos),adjust=num_(body.ajustesAnteriores),cash=Math.abs(num_(body.efectivoChofer));
 
   const uberId='uber_'+vehicleId+'_'+targetDate;
@@ -352,7 +364,7 @@ function previousCarry_(main,vehicleId,targetDate,legacySh,targetWeek){
 function upsertUberWeek_(main,row){ main.getSheetByName('Uber_Semanas').appendRow(row); }
 
 function serverScheduleTo_(vehicle,targetDate){
-  const main=SpreadsheetApp.openById(SPREADSHEET_ID),plans=sheetObjects_(main.getSheetByName('Plan_Pagos')).filter(p=>String(p.VehicleID)===String(vehicle.VehicleID)&&ymd_(p.FechaProgramada)<=targetDate).sort((a,b)=>ymd_(a.FechaProgramada).localeCompare(ymd_(b.FechaProgramada)));
+  const main=SpreadsheetApp.openById(mainSpreadsheetId_()),plans=sheetObjects_(main.getSheetByName('Plan_Pagos')).filter(p=>String(p.VehicleID)===String(vehicle.VehicleID)&&ymd_(p.FechaProgramada)<=targetDate).sort((a,b)=>ymd_(a.FechaProgramada).localeCompare(ymd_(b.FechaProgramada)));
   if(plans.length)return plans.map(p=>({planId:String(p.PlanID||''),week:num_(p.Semana),date:ymd_(p.FechaProgramada),amount:num_(p.CuotaTotal||vehicle.CuotaSemanal)}));
   const start=ymd_(vehicle.FechaInicio),end=ymd_(vehicle.FechaFin); if(!start)return[];
   const out=[]; let d=new Date(start+'T00:00:00Z'),finish=new Date((end||targetDate)+'T00:00:00Z'),target=new Date(targetDate+'T00:00:00Z'),week=1;
@@ -368,7 +380,7 @@ function sumReceived_(main,vehicleId,date){
 function syncLegacyStatusForPayment_(vehicleId,date,expected){
   try{
     const vehicle=vehicleObjectById_(vehicleId); if(!vehicle||!bool_(vehicle.PlanIntegracionActiva)||!vehicle.PlanSheetTab)return;
-    const main=SpreadsheetApp.openById(SPREADSHEET_ID),received=sumReceived_(main,vehicleId,ymd_(date)),need=expected>0?expected:num_(vehicle.CuotaSemanal),state=received>=need-0.01?'Pagado':'Pendiente';
+    const main=SpreadsheetApp.openById(mainSpreadsheetId_()),received=sumReceived_(main,vehicleId,ymd_(date)),need=expected>0?expected:num_(vehicle.CuotaSemanal),state=received>=need-0.01?'Pagado':'Pendiente';
     const legacy=SpreadsheetApp.openById(planSpreadsheetId_()),sh=legacy.getSheetByName(String(vehicle.PlanSheetTab)); if(!sh)return;
     setLegacyStatus_(sh,ymd_(date),state);
   }catch(e){log_('SYNC',vehicleId,'LEGACY_STATUS_ERROR',String(e));}
@@ -386,7 +398,7 @@ function sheetObjects_(sheet){
   return values.slice(1).filter(row=>row.some(v=>v!=='')).map(row=>{const o={};headers.forEach((h,i)=>o[h]=row[i]);return o;});
 }
 function log_(entity,entityId,action,detail,user){
-  try{const sh=SpreadsheetApp.openById(SPREADSHEET_ID).getSheetByName('Historial');sh.appendRow([Utilities.getUuid(),new Date(),entity,entityId,action,detail,user||'system','AppsScript']);}catch(e){}
+  try{const sh=SpreadsheetApp.openById(mainSpreadsheetId_()).getSheetByName('Historial');sh.appendRow([Utilities.getUuid(),new Date(),entity,entityId,action,detail,user||'system','AppsScript']);}catch(e){}
 }
 function makePinHash_(salt,pin){return hash_(String(salt)+':'+String(pin));}
 
@@ -394,7 +406,7 @@ function makePinHash_(salt,pin){return hash_(String(salt)+':'+String(pin));}
 function updateAccount_(body,device){
   const accountId=String(body.accountId||'').trim();
   if(!accountId)return{ok:false,message:'Cuenta requerida.'};
-  const ss=SpreadsheetApp.openById(SPREADSHEET_ID),sh=ss.getSheetByName('Cuentas');
+  const ss=SpreadsheetApp.openById(mainSpreadsheetId_()),sh=ss.getSheetByName('Cuentas');
   const values=sh.getDataRange().getValues(),headers=values[0].map(String),idx={};headers.forEach((h,i)=>idx[h]=i);
   let row=-1;for(let r=1;r<values.length;r++)if(String(values[r][idx.CuentaID])===accountId){row=r+1;break;}
   if(row<0)return{ok:false,message:'Cuenta no encontrada.'};
@@ -424,7 +436,7 @@ function operationalTuesday_(){
 function pendingPlanCards_(){
   // Return the authoritative pending list with bootstrap; a missing external source
   // must fail the fresh read rather than silently manufacture historical debt.
-  const legacy=SpreadsheetApp.openById(planSpreadsheetId_()),ss=SpreadsheetApp.openById(SPREADSHEET_ID);
+  const legacy=SpreadsheetApp.openById(planSpreadsheetId_()),ss=SpreadsheetApp.openById(mainSpreadsheetId_());
   return sheetObjects_(ss.getSheetByName('Vehiculos')).map(v=>{
     const active=bool_(v.PlanIntegracionActiva),tab=String(v.PlanSheetTab||''),sh=active&&tab?legacy.getSheetByName(tab):null;
     if(active&&!sh)throw new Error('No se pudo leer el plan de '+String(v.Nombre||v.VehicleID));

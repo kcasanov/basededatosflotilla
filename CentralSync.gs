@@ -212,7 +212,7 @@ function centralSummarizeResult_(result) {
 }
 
 function centralBuildWeekModel_(weekDate) {
-  var ss = SpreadsheetApp.openById(SPREADSHEET_ID);
+  var ss = SpreadsheetApp.openById(mainSpreadsheetId_());
   var vehicles = sheetObjects_(ss.getSheetByName('Vehiculos')).filter(function(v) {
     var op = String(v.OperacionEstado || 'ACTIVO').toUpperCase();
     return op !== 'FINALIZADO' && op !== 'CANCELADO' && String(v.Estado || 'ACTIVO').toUpperCase() !== 'INACTIVO';
@@ -403,11 +403,10 @@ function centralSpecialDatesForWindow_(vehicle, start, end) {
   return result;
 }
 
-function centralCurrentTuesday_() {
-  var parts = Utilities.formatDate(new Date(), TZ, 'yyyy-MM-dd').split('-').map(Number);
+function centralCurrentTuesday_(date) {
+  var parts = (date ? ymd_(date) : Utilities.formatDate(new Date(), TZ, 'yyyy-MM-dd')).split('-').map(Number);
   var d = new Date(Date.UTC(parts[0], parts[1]-1, parts[2]));
-  var add = (2 - d.getUTCDay() + 7) % 7;
-  d.setUTCDate(d.getUTCDate() + add);
+  d.setUTCDate(d.getUTCDate() - (d.getUTCDay() + 6) % 7 + 1);
   return Utilities.formatDate(d, 'UTC', 'yyyy-MM-dd');
 }
 
@@ -416,19 +415,19 @@ function centralIsFifthTuesday_(date) {
 }
 
 function centralConfigValue_(key, fallback) {
-  var ss = SpreadsheetApp.openById(SPREADSHEET_ID);
+  var ss = SpreadsheetApp.openById(mainSpreadsheetId_());
   var rows = sheetObjects_(ss.getSheetByName('Config'));
   var hit = rows.find(function(r){return String(r.Clave || '') === String(key);});
   return hit && hit.Valor !== '' && hit.Valor != null ? String(hit.Valor) : fallback;
 }
 
 function centralActiveMappings_() {
-  var ss = SpreadsheetApp.openById(SPREADSHEET_ID);
+  var ss = SpreadsheetApp.openById(mainSpreadsheetId_());
   return sheetObjects_(ss.getSheetByName('Central_Map')).filter(function(r){return bool_(r.Activo);});
 }
 
 function centralSyncState_(weekDate, syncKey) {
-  var ss = SpreadsheetApp.openById(SPREADSHEET_ID);
+  var ss = SpreadsheetApp.openById(mainSpreadsheetId_());
   var sh = ss.getSheetByName('Central_Sync');
   if (!sh) return null;
   var key = String(weekDate) + '|' + String(syncKey);
@@ -436,7 +435,7 @@ function centralSyncState_(weekDate, syncKey) {
 }
 
 function centralUpsertSyncState_(weekDate, item, desired, synced, delta, status) {
-  var ss = SpreadsheetApp.openById(SPREADSHEET_ID);
+  var ss = SpreadsheetApp.openById(mainSpreadsheetId_());
   var sh = ss.getSheetByName('Central_Sync');
   if (!sh) return;
   var values = sh.getDataRange().getValues();
@@ -455,6 +454,7 @@ function centralUpsertSyncState_(weekDate, item, desired, synced, delta, status)
 }
 
 function centralApiGetAccounts_(token) {
+  if (isTestMode_()) return {ok:false,error:'Central real bloqueada en modo de prueba.'};
   var url = centralConfigValue_('CENTRAL_API_URL','');
   if (!url) return {ok:false,error:'Falta CENTRAL_API_URL.'};
   try {
@@ -471,6 +471,7 @@ function centralApiGetAccounts_(token) {
 }
 
 function centralApiPost_(token, payload) {
+  if (isTestMode_()) return {ok:false,error:'Central real bloqueada en modo de prueba.'};
   var url = centralConfigValue_('CENTRAL_API_URL','');
   if (!url) return {ok:false,error:'Falta CENTRAL_API_URL.'};
   try {
