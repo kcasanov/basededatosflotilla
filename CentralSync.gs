@@ -219,8 +219,12 @@ function centralSyncedAccountIdsForWeek_(weekDate) {
   });
 }
 
-function reconcileGlobalAfterPaymentReversal_(device, realDate, lockAlreadyHeld) {
-  var weekDate = centralCurrentTuesday_(ymd_(realDate));
+function reconcileGlobalAfterPaymentReversal_(device, scheduledDate, realDate, lockAlreadyHeld) {
+  var allocation = centralPaymentDistribution_(scheduledDate, realDate);
+  var weekDate = allocation.weekDate || centralCurrentTuesday_(ymd_(realDate));
+  if (allocation.debtRecovery) {
+    return {ok:true, weekDate:weekDate, results:[], totalRemoved:0, debtRecovery:true, message:'La reversa solo afecta Pago de deudas; no había aporte global que ajustar.'};
+  }
   if (!globalSyncReady_()) {
     return {ok:true, disabled:true, weekDate:weekDate, results:[], totalRemoved:0, message:'Aportes al archivo global desactivados.'};
   }
@@ -342,7 +346,8 @@ function centralBuildWeekModel_(weekDate) {
   });
 
   rows.forEach(function(r) { r.received = sumReceived_(ss, r.vehicleId, r.date); });
-  var available = centralCashReceivedForWeek_(sheetObjects_(ss.getSheetByName('Pagos_Reales')), Utilities.formatDate(weekStart,'UTC','yyyy-MM-dd'), Utilities.formatDate(weekEnd,'UTC','yyyy-MM-dd'));
+  var cash = centralCashAllocationForWeek_(sheetObjects_(ss.getSheetByName('Pagos_Reales')), weekDate);
+  var available = cash.operational;
   var automaticIVA = rows.reduce(function(sum,r) { return sum + num_(r.iva); }, 0);
   var automaticInsurance = rows.reduce(function(sum,r) { return sum + num_(r.insurance); }, 0);
 
@@ -379,17 +384,46 @@ function centralBuildWeekModel_(weekDate) {
   });
   var rem = accounts.find(function(a){return a.type === 'REMANENTE';});
   if (rem) {
-    rem.need = Math.max(0, remaining);
-    rem.assigned = Math.max(0, remaining);
+    rem.need = Math.max(0, remaining + cash.debtRecovery);
+    rem.assigned = Math.max(0, remaining + cash.debtRecovery);
   }
 
-  return {weekDate:weekDate, rows:rows, accounts:accounts, available:available};
+  return {weekDate:weekDate, rows:rows, accounts:accounts, available:cash.total, operationalAvailable:cash.operational, debtRecovery:cash.debtRecovery};
+}
+function centralPreviousCalendarMonthDate_(date) {
+  var d = new Date(date);
+  var firstTarget = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() - 1, 1));
+  var lastDay = new Date(Date.UTC(firstTarget.getUTCFullYear(), firstTarget.getUTCMonth() + 1, 0)).getUTCDate();
+  return new Date(Date.UTC(firstTarget.getUTCFullYear(), firstTarget.getUTCMonth(), Math.min(d.getUTCDate(), lastDay)));
+}
+function centralPaymentDistribution_(scheduledDate, realDate) {
+  var scheduled = ymd_(scheduledDate), real = ymd_(realDate);
+  if (!scheduled || !real) return {weekDate:'',debtRecovery:false};
+  var scheduledObj = new Date(scheduled + 'T00:00:00Z');
+  var realObj = new Date(real + 'T00:00:00Z');
+  var debtRecovery = scheduledObj < centralPreviousCalendarMonthDate_(realObj);
+  return {
+    weekDate:centralCurrentTuesday_(debtRecovery ? real : scheduled),
+    debtRecovery:debtRecovery
+  };
+}
+function centralCashAllocationForWeek_(payments, weekDate) {
+  var result = {operational:0,debtRecovery:0,total:0};
+  payments.forEach(function(p) {
+    var allocation = centralPaymentDistribution_(p.FechaProgramada, p.FechaReal || p.CreatedAt);
+    if (allocation.weekDate !== weekDate) return;
+    var amount = num_(p.MontoRecibido);
+    if (allocation.debtRecovery) result.debtRecovery += amount;
+    else result.operational += amount;
+  });
+  result.total = result.operational + result.debtRecovery;
+  return result;
 }
 function centralCashReceivedForWeek_(payments,start,end) {
-  return payments.reduce(function(sum,p) {
-    var realDate = ymd_(p.FechaReal || p.CreatedAt);
-    return sum + (realDate >= start && realDate <= end ? num_(p.MontoRecibido) : 0);
-  },0);
+  var startDate = new Date(String(start) + 'T00:00:00Z');
+  startDate.setUTCDate(startDate.getUTCDate() + 1);
+  var weekDate = Utilities.formatDate(startDate,'UTC','yyyy-MM-dd');
+  return centralCashAllocationForWeek_(payments,weekDate).total;
 }
 
 function centralDesiredItems_(model, mappings) {
