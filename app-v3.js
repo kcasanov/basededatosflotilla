@@ -139,18 +139,21 @@ async function savePaymentV3() {
   if (pending <= .01) return alert('Esta cuota ya está completamente pagada.');
   if (amount > pending + .01) return alert(`El máximo que falta de esta cuota es ${money(pending)}. Si existe dinero adicional, registralo en la siguiente semana correspondiente.`);
   $('savePaymentButton').disabled = true;
-  const beforeCentral = centralFundingSnapshot();
+  const realDate = isoDate(crTodayUTC());
+  const fundingWeek = paymentDistributionForMovement(row.date, realDate);
+  const fundingTuesday = fundingWeek.week ? parseDate(fundingWeek.week) : operationalTuesday();
+  const beforeCentral = centralFundingSnapshot(fundingTuesday);
   try {
     const after = st.received + amount;
     const res = await backend('markPayment', {
       sessionToken: sessionStorage.getItem(SESSION_KEY), planId: row.planId || row.key, vehicleId: row.vehicleId,
-      fechaProgramada: row.date, fechaReal: isoDate(crTodayUTC()), montoEsperado: row.amount, montoRecibido: amount,
+      fechaProgramada: row.date, fechaReal: realDate, montoEsperado: row.amount, montoRecibido: amount,
       estado: after >= row.amount - .01 ? 'PAGADO' : 'PARCIAL', nota: $('paymentNote').value.trim(), origen: 'MANUAL'
     });
     if (!res.ok) throw new Error(res.message || 'No se pudo registrar el abono');
     closePaymentV3(); await loadProductionData(); renderAll();
     window.refreshPlanInBackgroundV34?.();
-    await offerCentralFunding(beforeCentral);
+    await offerCentralFunding(beforeCentral, fundingTuesday);
   } catch (e) { alert(e.message || 'Error registrando el abono'); }
   finally { $('savePaymentButton').disabled = false; }
 }
@@ -373,12 +376,14 @@ async function saveUberWeekV3(vehicleId) {
     ajustesAnteriores:Number(fieldV3(form,'adjustments').value||0),efectivoChofer:Math.abs(Number(fieldV3(form,'cash').value||0)),ocrTexto:fieldV3(form,'ocrText').value||''
   };
   if(!confirm(`Guardar actualización Uber para ${fmtShort(date)}?`))return;
-  const beforeCentral=centralFundingSnapshot();
+  const uberFundingWeek=paymentDistributionForMovement(date,isoDate(crTodayUTC()));
+  const uberFundingTuesday=uberFundingWeek.week?parseDate(uberFundingWeek.week):operationalTuesday();
+  const beforeCentral=centralFundingSnapshot(uberFundingTuesday);
   try{
     const r=await backend('saveUberWeek',payload); if(!r.ok)throw new Error(r.message||'No se pudo guardar');
     await loadProductionData(); await loadPlanDashboardV3(true); renderAll();
     alert(`Semana guardada. Disponible Uber: ${money(r.rawAvailable)} · saldo arrastrado: ${money(r.carryIn||0)} · pendiente de esa cuota: ${money(r.targetPending)}${Number(r.unapplied||0)>0?' · sobrante no arrastrado: '+money(r.unapplied):''}.`);
-    await offerCentralFunding(beforeCentral);
+    await offerCentralFunding(beforeCentral,uberFundingTuesday);
   }catch(e){alert(e.message||'Error guardando Uber');}
 }
 
