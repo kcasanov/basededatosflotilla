@@ -43,6 +43,45 @@ function syncCentralAction_(body, device) {
   return syncCentralCurrentWeek_(device || 'system', weekDate, cuentaId);
 }
 
+function globalFundingStatusAction_(body, device) {
+  var weekDate = ymd_(body.weekDate) || centralCurrentTuesday_();
+  if (!globalSyncReady_()) {
+    return {ok:true, disabled:true, weekDate:weekDate, items:[], message:'Aportes al archivo global desactivados.'};
+  }
+
+  var start = centralConfigValue_('CENTRAL_SYNC_START', '2026-09-29');
+  if (start && weekDate < start) {
+    return {ok:true, skipped:true, weekDate:weekDate, items:[]};
+  }
+
+  var model = centralBuildWeekModel_(weekDate);
+  var mappings = centralActiveMappings_();
+  var desired = centralDesiredItems_(model, mappings);
+  var accountsResult = centralApiGetAccounts_();
+  if (!accountsResult.ok) return {ok:false, weekDate:weekDate, items:[], message:accountsResult.error || 'No se pudo leer el archivo global.'};
+  var accounts = accountsResult.accounts || [];
+
+  var items = desired.map(function(item) {
+    var centralId = String(item.map && item.map.CentralAccountID || '').trim();
+    var desiredAmount = centralRoundUp500_(item.desiredAmount);
+    var appliedAmount = centralId ? centralGlobalSyncedAmount_(weekDate, item.syncKey, centralId) : 0;
+    var account = centralFindAccount_(accounts, centralId);
+    return {
+      cuentaId:String(item.cuentaId || ''),
+      syncKey:String(item.syncKey || ''),
+      centralAccountId:centralId,
+      desiredAmount:desiredAmount,
+      appliedAmount:centralRound_(appliedAmount),
+      pending:desiredAmount > appliedAmount + 0.005,
+      currentBalance:account ? centralRound_(account.balance) : null
+    };
+  }).filter(function(item) {
+    return item.desiredAmount > 0.005;
+  });
+
+  return {ok:true, weekDate:weekDate, items:items};
+}
+
 function syncCentralCurrentWeekSafe_(device, weekDate) {
   try {
     return syncCentralCurrentWeek_(device || 'system', weekDate || centralCurrentTuesday_());
