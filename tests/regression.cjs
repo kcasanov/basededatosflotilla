@@ -122,7 +122,7 @@ for (const [amount,rounded] of [[0,0],[1,500],[500,500],[500.01,1000],[12287,125
 }
 for (const [day,week] of [['2026-10-04','2026-09-29'],['2026-10-05','2026-10-06'],['2026-10-06','2026-10-06']]) eq(server.centralCurrentTuesday_(day),week,'Central uses operational week');
 const cashMovements=[{FechaProgramada:'2026-09-08',FechaReal:'2026-10-03',MontoRecibido:40},{FechaProgramada:'2026-09-29',FechaReal:'2026-10-04',MontoRecibido:60},{FechaProgramada:'2026-09-29',FechaReal:'2026-10-05',MontoRecibido:20},{FechaProgramada:'2026-10-06',FechaReal:'2026-10-04',MontoRecibido:80},{FechaProgramada:'2026-06-10',FechaReal:'2026-10-04',MontoRecibido:90}];
-eq(server.centralCashAllocationForWeek_(cashMovements,'2026-09-09'),{operational:40,debtRecovery:0,total:40},'backend keeps recent late cash with scheduled week');
+eq(server.centralCashAllocationForWeek_(cashMovements,'2026-09-08'),{operational:40,debtRecovery:0,total:40},'backend keeps recent late cash with scheduled week');
 eq(server.centralCashAllocationForWeek_(cashMovements,'2026-09-29'),{operational:80,debtRecovery:90,total:170},'backend separates old recovery from operational cash');
 eq(server.centralCashAllocationForWeek_(cashMovements,'2026-10-06'),{operational:80,debtRecovery:0,total:80},'backend assigns advance payment to future scheduled week');
 eq(server.centralPaymentDistribution_('2026-09-04','2026-10-04').debtRecovery,false,'backend one-month boundary inclusive');
