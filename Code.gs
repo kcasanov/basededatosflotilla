@@ -179,10 +179,30 @@ function unmarkPayment_(body,device){
   for(let r=data.length-1;r>=1;r--){
     if(String(data[r][0])===pagoId){
       if(String(data[r][11]||'MANUAL').toUpperCase()!=='MANUAL')return{ok:false,message:'Este pago debe corregirse desde Uber.'};
-      const vehicleId=String(data[r][2]||''),date=ymd_(data[r][3]),expected=num_(data[r][5]);
-      const audit={key:vehicleId+'|'+date,pagoId:pagoId,amount:num_(data[r][6]),date:ymd_(data[r][4]),origin:'MANUAL',createdAt:new Date().toISOString(),reversed:true};
-      sh.deleteRow(r+1); syncLegacyStatusForPayment_(vehicleId,date,expected);
-      log_('PAGO',pagoId,'DELETE_PAYMENT',JSON.stringify(audit),device); return{ok:true};
+      const vehicleId=String(data[r][2]||''),date=ymd_(data[r][3]),expected=num_(data[r][5]),realDate=ymd_(data[r][4]);
+      const audit={key:vehicleId+'|'+date,pagoId:pagoId,amount:num_(data[r][6]),date:realDate,origin:'MANUAL',createdAt:new Date().toISOString(),reversed:true};
+      sh.deleteRow(r+1);
+      syncLegacyStatusForPayment_(vehicleId,date,expected);
+      log_('PAGO',pagoId,'DELETE_PAYMENT',JSON.stringify(audit),device);
+
+      // Si este ingreso ya había completado una cuenta autorizada para el archivo global,
+      // recalculamos únicamente las cuentas que ya tenían fondeo sincronizado en la semana
+      // real del ingreso. La misma bitácora Central_Sync vuelve idempotente el ajuste.
+      let globalAdjustment={ok:true,disabled:true,weekDate:realDate||'',message:'Sin aportes globales que ajustar.'};
+      try{
+        if(typeof reconcileGlobalAfterPaymentReversal_==='function'){
+          globalAdjustment=reconcileGlobalAfterPaymentReversal_(device,realDate,true);
+        }
+      }catch(err){
+        globalAdjustment={ok:false,weekDate:realDate||'',error:String(err&&err.message||err)};
+      }
+      return{
+        ok:true,
+        globalAdjustment:globalAdjustment,
+        warning:globalAdjustment&&globalAdjustment.ok===false
+          ? 'El pago se reversó, pero quedó pendiente revisar el ajuste del archivo global.'
+          : ''
+      };
     }
   }
   return{ok:false,message:'Pago no encontrado.'};
