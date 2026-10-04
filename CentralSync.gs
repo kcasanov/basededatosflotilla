@@ -89,6 +89,16 @@ function syncCentralCurrentWeek_(device, weekDate) {
         return;
       }
 
+      var prior = centralSyncState_(weekDate, item.syncKey);
+      var syncedBefore = prior ? num_(prior.SyncedAmount) : 0;
+      var desiredAmount = centralRoundUp500_(item.desiredAmount);
+      var delta = centralRound_(desiredAmount - syncedBefore);
+      var pending = prior && String(prior.Status || '') === 'PENDING' && String(prior.OperationID || '');
+      if (!pending && Math.abs(delta) < 0.01) {
+        results.push({syncKey:item.syncKey, centralAccountId:centralId, desiredAmount:desiredAmount, delta:0, status:'SIN_CAMBIOS'});
+        return;
+      }
+
       var account = centralFindAccount_(accounts, centralId);
       if (!account && String(item.cuentaId || '') === 'u') {
         var create = centralApiPost_(token, {
@@ -116,23 +126,36 @@ function syncCentralCurrentWeek_(device, weekDate) {
         return;
       }
 
-      var prior = centralSyncState_(weekDate, item.syncKey);
-      var syncedBefore = prior ? num_(prior.SyncedAmount) : 0;
-      var desiredAmount = centralRoundUp500_(item.desiredAmount);
-      var delta = centralRound_(desiredAmount - syncedBefore);
-
-      if (Math.abs(delta) < 0.01) {
-        results.push({
-          syncKey:item.syncKey,
-          centralAccountId:centralId,
-          desiredAmount:desiredAmount,
-          delta:0,
-          status:'SIN_CAMBIOS'
-        });
+      if (pending && Math.abs(num_(prior.DesiredAmount) - desiredAmount) > 0.005) {
+        results.push({syncKey:item.syncKey, error:'Hay una operación pendiente de verificar; no se puede cambiar su monto todavía.'});
         return;
       }
 
-      var beforeBalance = num_(account.balance);
+      if (pending) {
+        var check = centralApiGetOperation_(token, String(prior.OperationID));
+        if (!check.ok) {
+          results.push({syncKey:item.syncKey, error:check.error || 'No se pudo verificar la operación pendiente.'});
+          return;
+        }
+        if (check.found) {
+          var previousOperation = check.operation || {};
+          if (String(previousOperation.accountId || '') !== centralId ||
+              Math.abs(num_(previousOperation.movement) - num_(prior.Delta)) > 0.005 ||
+              Math.abs(num_(previousOperation.newBalance) - num_(prior.TargetBalance)) > 0.005) {
+            results.push({syncKey:item.syncKey, error:'La operación registrada en Central no coincide; requiere revisión manual.'});
+            return;
+          }
+          centralUpsertSyncState_(weekDate, item, desiredAmount, desiredAmount, num_(prior.Delta), 'OK', prior);
+          results.push({syncKey:item.syncKey, centralAccountId:centralId, desiredAmount:desiredAmount, delta:0, status:'RECUPERADA'});
+          return;
+        }
+        if (Math.abs(num_(account.balance) - num_(prior.BeforeBalance)) > 0.005) {
+          results.push({syncKey:item.syncKey, error:'Saldo de Central cambió durante una operación pendiente; requiere revisión manual.'});
+          return;
+        }
+      }
+
+      var beforeBalance = pending ? num_(prior.BeforeBalance) : num_(account.balance);
       var afterBalance = centralRound_(beforeBalance + delta);
       if (afterBalance < -0.01) {
         centralUpsertSyncState_(weekDate, item, desiredAmount, syncedBefore, delta, 'ERROR_SALDO_NEGATIVO');
@@ -141,7 +164,13 @@ function syncCentralCurrentWeek_(device, weekDate) {
       }
       afterBalance = Math.max(0, afterBalance);
 
-      var operationId = 'FLOTILLA_' + weekDate.replace(/-/g, '') + '_' + item.syncKey;
+      var operationId = pending ? String(prior.OperationID) :
+        'FLOTILLA_' + weekDate.replace(/-/g, '') + '_' + item.syncKey + '_' + Utilities.getUuid();
+      var operation = {OperationID:operationId, BeforeBalance:beforeBalance, TargetBalance:afterBalance};
+      if (!pending) {
+        centralUpsertSyncState_(weekDate, item, desiredAmount, syncedBefore, delta, 'PENDING', operation);
+        SpreadsheetApp.flush();
+      }
       var updated = centralApiPost_(token, {
         action:'updateBalance',
         id:centralId,
@@ -149,19 +178,21 @@ function syncCentralCurrentWeek_(device, weekDate) {
         context:{
           type:'Fondeo automático Flotilla',
           operationId:operationId,
+          expectedBalance:beforeBalance,
           month:weekDate.slice(0,7),
           week:weekDate
         }
       });
 
       if (!updated.ok) {
-        centralUpsertSyncState_(weekDate, item, desiredAmount, syncedBefore, delta, 'ERROR: ' + String(updated.error || ''));
+        // La respuesta puede perderse después de la escritura: se conserva
+        // PENDING para verificar el identificador en Central antes de reintentar.
         results.push({syncKey:item.syncKey, error:updated.error || 'No se pudo actualizar Central'});
         return;
       }
 
       account.balance = afterBalance;
-      centralUpsertSyncState_(weekDate, item, desiredAmount, desiredAmount, delta, 'OK');
+      centralUpsertSyncState_(weekDate, item, desiredAmount, desiredAmount, delta, 'OK', operation);
       log_('CENTRAL_SYNC', operationId, 'SYNC_ACCOUNT', JSON.stringify({
         weekDate:weekDate,
         cuentaId:item.cuentaId,
@@ -446,23 +477,43 @@ function centralSyncState_(weekDate, syncKey) {
   return sheetObjects_(sh).find(function(r){return String(r.StateKey || '') === key;}) || null;
 }
 
-function centralUpsertSyncState_(weekDate, item, desired, synced, delta, status) {
+function centralUpsertSyncState_(weekDate, item, desired, synced, delta, status, operation) {
   var ss = SpreadsheetApp.openById(mainSpreadsheetId_());
   var sh = ss.getSheetByName('Central_Sync');
-  if (!sh) return;
+  if (!sh) throw new Error('Falta la hoja Central_Sync para registrar la operación.');
   var values = sh.getDataRange().getValues();
   var headers = values[0].map(String), idx = {};
+  if (headers.length < 13) {
+    sh.getRange(1,11,1,3).setValues([['OperationID','BeforeBalance','TargetBalance']]);
+    values = sh.getDataRange().getValues();
+    headers = values[0].map(String);
+  }
   headers.forEach(function(h,i){idx[h]=i;});
   var key = String(weekDate) + '|' + String(item.syncKey), row = -1;
   for (var r=1;r<values.length;r++) {
     if (String(values[r][idx.StateKey]) === key) {row=r+1;break;}
   }
+  operation = operation || {};
   var data = [
     key,weekDate,item.cuentaId,item.vehicleId,String(item.map.CentralAccountID || ''),
-    desired,synced,delta,status,new Date()
+    desired,synced,delta,status,new Date(),
+    String(operation.OperationID || ''),num_(operation.BeforeBalance),num_(operation.TargetBalance)
   ];
   if (row < 0) sh.appendRow(data);
   else sh.getRange(row,1,1,data.length).setValues([data]);
+}
+
+function centralApiGetOperation_(token, operationId) {
+  if (isTestMode_()) return {ok:false,error:'Central real bloqueada en modo de prueba.'};
+  var url = centralConfigValue_('CENTRAL_API_URL','');
+  if (!url) return {ok:false,error:'Falta CENTRAL_API_URL.'};
+  try {
+    var response = UrlFetchApp.fetch(url + '?action=getOperation&token=' + encodeURIComponent(token) +
+      '&operationId=' + encodeURIComponent(operationId), {method:'get',muteHttpExceptions:true});
+    return JSON.parse(response.getContentText());
+  } catch (e) {
+    return {ok:false,error:String(e && e.message || e)};
+  }
 }
 
 function centralApiGetAccounts_(token) {

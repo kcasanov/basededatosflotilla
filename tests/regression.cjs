@@ -84,7 +84,7 @@ const uberHeaders=['UberSemanaID','VehicleID','PlanSheetTab','Semana','FechaProg
 const vehicle={VehicleID:'i10',TipoCobro:'UBER',PlanSheetTab:'i10',PlanIntegracionActiva:true,CuotaSemanal:100,FechaInicio:'2026-09-15'};
 let uuid=0;
 const scriptProps=new Map();
-const mainSheets={Pagos_Reales:new Sheet([payHeaders]),Uber_Semanas:new Sheet([uberHeaders]),Historial:new Sheet([['ID','Fecha','Entidad','EntidadID','Accion','Detalle','Usuario','Origen']]),Plan_Pagos:new Sheet([['PlanID','VehicleID','Semana','FechaProgramada','CuotaTotal']])};
+const mainSheets={Pagos_Reales:new Sheet([payHeaders]),Uber_Semanas:new Sheet([uberHeaders]),Historial:new Sheet([['ID','Fecha','Entidad','EntidadID','Accion','Detalle','Usuario','Origen']]),Plan_Pagos:new Sheet([['PlanID','VehicleID','Semana','FechaProgramada','CuotaTotal']]),Central_Sync:new Sheet([['StateKey','WeekDate','CuentaID','VehicleID','CentralAccountID','DesiredAmount','SyncedAmount','Delta','Status','UpdatedAt']])};
 const external=new Sheet([['Semana',777],['Ganancias',0],['Reembolsos',0],['Efectivo',0],['Cuota',100],['Saldo','=B2+B3-B4-B5'],[],['Semana','Fecha','Cuota Total','Estado'],[1,'2026-09-15',100,'Pagado'],[2,'2026-09-22',100,'Pendiente'],[3,'2026-09-29',100,'Pendiente']]);
 const main={getSheetByName:n=>mainSheets[n]};
 const server=vm.createContext({console,Date,JSON,Number,isFinite,SpreadsheetApp:{openById:id=>id==='main'?main:{getSheetByName:()=>external},flush(){}},PropertiesService:{getScriptProperties:()=>({getProperty:key=>scriptProps.get(key)||null})},Utilities:{formatDate:d=>new Date(d).toISOString().slice(0,10),getUuid:()=>String(++uuid)}});
@@ -128,6 +128,13 @@ assert.throws(()=>server.planSpreadsheetId_(),/configure una copia distinta/); c
 scriptProps.set('FLOTILLA_PLAN_SPREADSHEET_ID','external');
 eq(server.mainSpreadsheetId_(),'main','test mode uses copied main sheet');
 eq(server.planSpreadsheetId_(),'external','test mode uses copied plan sheet');
+const pendingItem={syncKey:'omoda',cuentaId:'omoda',vehicleId:'',map:{CentralAccountID:'omoda'}};
+server.centralUpsertSyncState_('2026-09-29',pendingItem,50000,0,50000,'PENDING',{OperationID:'test-operation',BeforeBalance:100000,TargetBalance:150000});
+eq(mainSheets.Central_Sync.rows[0].slice(10),['OperationID','BeforeBalance','TargetBalance'],'Central sync ledger adds durable operation columns');
+const pendingState=server.centralSyncState_('2026-09-29','omoda');
+eq([pendingState.Status,pendingState.OperationID,pendingState.BeforeBalance,pendingState.TargetBalance],['PENDING','test-operation',100000,150000],'pending Central operation survives in ledger');
+server.centralUpsertSyncState_('2026-09-29',pendingItem,50000,50000,50000,'OK',pendingState);
+eq(mainSheets.Central_Sync.rows.length,2,'Central retry updates one ledger row');
 scriptProps.clear();
 for (const [today,expected] of [['2026-10-04',['2026-09-29']],['2026-10-06',['2026-09-29']],['2026-10-07',['2026-09-29','2026-10-06']]]) {
   eq(server.pendingDueObligations_([{date:'2026-09-29',state:'Pendiente'},{date:'2026-10-06',state:'Pendiente'},{date:'2026-09-22',state:'Pagado'}],today).map(r=>r.date),expected,'backend sends only due pending weeks');
@@ -168,6 +175,47 @@ eq(save('2026-09-22',80).ok,false,'failed correction reported');
 mainSheets.Uber_Semanas.appendRow=append;
 eq(JSON.stringify({payments:mainSheets.Pagos_Reales.rows,weeks:mainSheets.Uber_Semanas.rows,external:external.rows}),before,'rollback restores all allocation data');
 eq(save('2026-10-13',100).ok,false,'future week rejected');
+const syncCode=fs.readFileSync('CentralSync.gs','utf8').replace('var enabled = false; // Owner-requested stop.','var enabled = true; // Isolated test only.');
+const syncTest=vm.createContext({
+  Date,JSON,Math,Number,isFinite,console,doPost(){},json_(){},protected_(){},
+  num_:value=>Number(value)||0,ymd_:value=>String(value||''),
+  props_:()=>({getProperty:key=>key==='CENTRAL_API_TOKEN'?'test-token':null}),
+  LockService:{getScriptLock:()=>({tryLock:()=>true,releaseLock(){}})},
+  Utilities:{getUuid:(()=>{let n=0;return ()=>String(++n);})()},
+  SpreadsheetApp:{flush(){}},log_(){}
+});
+vm.runInContext(syncCode,syncTest);
+let syncNeed=50000,syncBalance=100000,syncState=null,syncOperation=null,syncPosts=0,syncPostMode='lostResponse';
+syncTest.centralConfigValue_=()=>'';
+syncTest.centralBuildWeekModel_=()=>({accounts:[{id:'omoda',need:syncNeed,assigned:syncNeed}],rows:[]});
+syncTest.centralActiveMappings_=()=>[{SyncKey:'omoda',CuentaID:'omoda',CentralAccountID:'omoda'}];
+syncTest.centralApiGetAccounts_=()=>({ok:true,accounts:[{id:'omoda',balance:syncBalance}]});
+syncTest.centralSyncState_=()=>syncState;
+syncTest.centralUpsertSyncState_=(week,item,desired,synced,delta,status,operation={})=>{
+  syncState={...operation,DesiredAmount:desired,SyncedAmount:synced,Delta:delta,Status:status};
+};
+syncTest.centralApiGetOperation_=()=>syncOperation?{ok:true,found:true,operation:syncOperation}:{ok:true,found:false};
+syncTest.centralApiPost_=(token,payload)=>{
+  syncPosts++;
+  if(syncPostMode==='failBefore')return {ok:false,error:'timeout'};
+  const movement=payload.balance-syncBalance;
+  syncBalance=payload.balance;
+  syncOperation={accountId:payload.id,movement,newBalance:payload.balance};
+  return syncPostMode==='lostResponse'?{ok:false,error:'timeout'}:{ok:true};
+};
+eq(syncTest.syncCentralCurrentWeek_('test','2026-09-29').results[0].error,'timeout','lost Central response remains pending');
+eq([syncState.Status,syncBalance,syncPosts],['PENDING',150000,1],'pending operation records write before Central call');
+eq(syncTest.syncCentralCurrentWeek_('test','2026-09-29').results[0].status,'RECUPERADA','retry recognizes already applied Central operation');
+eq([syncState.Status,syncBalance,syncPosts],['OK',150000,1],'retry does not double credit Central');
+syncNeed=51000;syncPostMode='success';syncOperation=null;
+eq(syncTest.syncCentralCurrentWeek_('test','2026-09-29').results[0].delta,1000,'later increase sends only new amount');
+eq([syncBalance,syncPosts],[151000,2],'later increase uses a new operation');
+syncNeed=50000;syncBalance=100000;syncState=null;syncOperation=null;syncPosts=0;syncPostMode='failBefore';
+syncTest.syncCentralCurrentWeek_('test','2026-09-29');
+const retryId=syncState.OperationID;
+syncPostMode='success';
+eq(syncTest.syncCentralCurrentWeek_('test','2026-09-29').results[0].status,'OK','safe retry applies an operation that never reached Central');
+eq([syncBalance,syncPosts,syncState.OperationID],[150000,2,retryId],'safe retry keeps original operation id');
 run("planDashboardV3=[];planDashboardLoadedV3=false;globalThis.planRenders=0;backend=async action=>({ok:true,cards:[{vehicleId:'i10',integrationActive:true,legacyPending:[{date:'2026-06-02',quota:100,week:1}]}]});renderWeek=()=>planRenders++;renderSummary=()=>planRenders++;renderVehicles=()=>planRenders++;");
 context.loadPlanDashboardV3(true).then(()=>{
   eq(run('planDashboardLoadedV3'),true,'background plan marked ready');
