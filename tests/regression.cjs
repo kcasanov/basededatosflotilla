@@ -29,7 +29,7 @@ eq(run("getLateRows().map(r=>r.date)"),['2026-06-02'],'only explicitly pending')
 eq(run("paymentStatusV3({amount:100,received:0,historicalApplied:true}).pending"),0,'no phantom debt');
 eq(run("paymentStatusV3({amount:100,received:40}).pending"),60,'partial payment');
 run("paymentState['i10|2026-09-08']={received:40,movements:[{date:'2026-10-03',amount:40}]}; paymentState['i10|2026-09-29']={received:80,movements:[{date:'2026-10-04',amount:60},{date:'2026-10-05',amount:20}]}; paymentState['i10|2026-10-06']={received:80,movements:[{date:'2026-10-04',amount:80}]}; paymentState['i10|2026-06-10']={received:90,movements:[{date:'2026-10-04',amount:90}]};");
-eq(run("cashAllocationForWeek(parseDate('2026-09-09'))"),{operational:40,debtRecovery:0,total:40},'recent late payment stays with its scheduled week');
+eq(run("cashAllocationForWeek(parseDate('2026-09-08'))"),{operational:40,debtRecovery:0,total:40},'recent late payment stays with its scheduled week');
 eq(run("cashAllocationForWeek(parseDate('2026-09-29'))"),{operational:80,debtRecovery:90,total:170},'scheduled-week cash plus old debt recovery are separated');
 eq(run("cashAllocationForWeek(parseDate('2026-10-06'))"),{operational:80,debtRecovery:0,total:80},'advance payment funds the future scheduled week');
 eq(run("allocateExpenses([{id:'iva',type:'weekly',need:50,assigned:0,priority:'critical',order:1},{id:'pago_deudas',type:'remainder',need:0,assigned:0,priority:'low',order:2}],80,90).map(x=>[x.id,x.assigned])"),[['iva',50],['pago_deudas',120]],'old recovery bypasses priorities and goes directly to debt');
