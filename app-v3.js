@@ -902,7 +902,15 @@ async function reverseMovement(id) {
       const detail=(r.globalAdjustment.errors||[]).map(x=>x.cuentaId+': '+x.message).join('\n');
       alert((r.warning||'El pago se reversó, pero quedó pendiente revisar el archivo global.')+(detail?'\n\n'+detail:''));
     }else if(Number(r.globalAdjustment?.totalRemoved||0)>0){
-      alert('Pago reversado. También se descontaron '+money(r.globalAdjustment.totalRemoved)+' de los aportes autorizados del archivo global.');
+      const moved=Array.isArray(r.globalAdjustment?.moved)?r.globalAdjustment.moved:[];
+      if(moved.length){
+        const detail=moved.map(x=>
+          (x.cuentaId||x.centralAccountId)+': '+money(x.beforeBalance)+' → '+money(x.afterBalance)+' ('+(x.delta>=0?'+':'')+money(x.delta)+')'
+        ).join('\n');
+        alert('Pago reversado y archivo global restaurado.\n\n'+detail);
+      }else{
+        alert('Pago reversado. También se descontaron '+money(r.globalAdjustment.totalRemoved)+' de los aportes autorizados del archivo global.');
+      }
     }
   }catch(e){alert(e.message);}
 }
