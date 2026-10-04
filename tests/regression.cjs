@@ -270,12 +270,13 @@ run("planDashboardV3=[];planDashboardLoadedV3=false;globalThis.planRenders=0;bac
 context.loadPlanDashboardV3(true).then(async()=>{
   eq(run('planDashboardLoadedV3'),true,'background plan marked ready');
   eq(run('planRenders'),3,'pending sections refreshed after plan load');
-  run("rowsForTuesday=()=>[];currentExpenses=()=>[{id:'casa',name:'Cuentas casa',need:25000,assigned:0,priority:'critical',order:1,type:'weekly'},{id:'omoda',name:'Omoda',need:50000,assigned:0,priority:'critical',order:2,type:'weekly'},{id:'pago_deudas',name:'Pago de deudas',need:0,assigned:0,priority:'low',order:3,type:'remainder'}];cashAllocationForWeek=()=>({operational:75000,debtRecovery:0,total:75000});backendCapabilities={globalAccountSyncReady:true};globalThis.centralCalls=[];backend=async(action,payload)=>{centralCalls.push({action,payload});return {ok:true,results:[]};};");
+  run("rowsForTuesday=()=>[];currentExpenses=()=>[{id:'casa',name:'Cuentas casa',need:25000,assigned:0,priority:'critical',order:1,type:'weekly'},{id:'omoda',name:'Omoda',need:50000,assigned:0,priority:'critical',order:2,type:'weekly'},{id:'pago_deudas',name:'Pago de deudas',need:0,assigned:0,priority:'low',order:3,type:'remainder'}];cashAllocationForWeek=()=>({operational:75000,debtRecovery:0,total:75000});backendCapabilities={globalAccountSyncReady:true};globalThis.centralCalls=[];globalThis.alerts=[];alert=x=>alerts.push(String(x));backend=async(action,payload)=>{centralCalls.push({action,payload});return {ok:true,results:[{status:'OK'}],moved:[{beforeBalance:100000,delta:25000,afterBalance:125000}]};};");
   eq(run("centralFundingSnapshot().casa.ready"),true,'fully funded home account is eligible for confirmation');
   eq(run("centralFundingSnapshot().omoda.ready"),true,'fully funded account is eligible for confirmation');
   eq(run("Object.keys(centralFundingSnapshot()).includes('pago_deudas')"),false,'debt remnant never prompts for Central');
   await context.offerCentralFunding({omoda:{ready:false}});
   eq(run("centralCalls.map(x=>[x.action,x.payload.cuentaId,x.payload.weekDate])"),[['syncGlobalAccount','casa','2026-09-29'],['syncGlobalAccount','omoda','2026-09-29']],'confirmation submits each newly funded account to Drive');
+  eq(run("alerts.every(x=>x.includes('Cuenta actualizada en el archivo global de Drive.')&&x.includes('100.000')&&x.includes('125.000'))"),true,'Drive confirmation shows previous and new balances');
   await context.offerCentralFunding({casa:{ready:true},omoda:{ready:true}});
   eq(run('centralCalls.length'),2,'already funded accounts do not prompt again');
   console.log(`${checks} regression checks passed; no external API was called.`);
