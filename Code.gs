@@ -33,6 +33,7 @@ function doPost(e) {
       case 'saveUberWeek': result = protected_(body, saveUberWeek_); break;
       case 'syncCentral': result = {ok:true,disabled:true,message:'Sincronización pausada.'}; break;
       case 'syncGlobalAccount': result = protected_(body, syncCentralAction_); break;
+      case 'getGlobalFundingStatus': result = protected_(body, globalFundingStatusAction_); break;
       default: result = {ok:false, message:'Acción no válida'};
     }
     return json_(result);
