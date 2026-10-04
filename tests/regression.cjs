@@ -94,7 +94,6 @@ eq(server.syncCentralCurrentWeek_('test','2026-09-29').disabled,true,'Central re
 const centralMappings=[
   {SyncKey:'omoda',CuentaID:'omoda',CentralAccountID:'omoda'},
   {SyncKey:'universidad',CuentaID:'u',CentralAccountID:'universidad_fondo'},
-  {SyncKey:'deudas',CuentaID:'pago_deudas',CentralAccountID:'prestamos'},
   {SyncKey:'seguro_i10',CuentaID:'seguros',VehicleID:'i10',Modo:'INSURANCE',CentralAccountID:'i10'}
 ];
 const centralModel={accounts:[
@@ -104,12 +103,14 @@ const centralModel={accounts:[
   {id:'seguros',need:5000,assigned:4999}
 ],rows:[{vehicleId:'i10',insurance:5000}]};
 let centralItems=server.centralDesiredItems_(centralModel,centralMappings);
-eq(centralItems.map(x=>[x.cuentaId,x.desiredAmount]),[['omoda',0],['u',25000],['pago_deudas',3000],['seguros',0]],'Central waits for full weekly accounts but accepts positive debt remnant');
+eq(centralItems.map(x=>[x.cuentaId,x.desiredAmount]),[['omoda',0],['u',25000],['seguros',0]],'Central waits for full weekly accounts and excludes debt remnant');
 centralModel.accounts[0].assigned=50000;
 centralModel.accounts[3].assigned=5000;
 centralItems=server.centralDesiredItems_(centralModel,centralMappings);
-eq(centralItems.map(x=>[x.cuentaId,x.desiredAmount]),[['omoda',50000],['u',25000],['pago_deudas',3000],['seguros',5000]],'Central can fund full accounts and insurance');
-eq(server.centralDesiredItems_(centralModel,centralMappings.filter(x=>x.CuentaID!=='pago_deudas')).some(x=>x.cuentaId==='pago_deudas'),false,'Debt remnant needs an explicit Central mapping');
+eq(centralItems.map(x=>[x.cuentaId,x.desiredAmount]),[['omoda',50000],['u',25000],['seguros',5000]],'Central can fund full accounts and insurance');
+for (const [amount,rounded] of [[0,0],[1,500],[500,500],[500.01,1000],[12287,12500],[12700,13000]]) {
+  eq(server.centralRoundUp500_(amount),rounded,'Central rounds contributions upward to 500 colones');
+}
 for (const [day,week] of [['2026-10-04','2026-09-29'],['2026-10-05','2026-10-06'],['2026-10-06','2026-10-06']]) eq(server.centralCurrentTuesday_(day),week,'Central uses operational week');
 const cashMovements=[{FechaProgramada:'2026-09-08',FechaReal:'2026-10-03',MontoRecibido:40},{FechaProgramada:'2026-09-29',FechaReal:'2026-10-04',MontoRecibido:60},{FechaProgramada:'2026-09-29',FechaReal:'2026-10-05',MontoRecibido:20}];
 eq(server.centralCashReceivedForWeek_(cashMovements,'2026-09-28','2026-10-04'),100,'Central includes late receipts in actual cash week');

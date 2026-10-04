@@ -118,7 +118,7 @@ function syncCentralCurrentWeek_(device, weekDate) {
 
       var prior = centralSyncState_(weekDate, item.syncKey);
       var syncedBefore = prior ? num_(prior.SyncedAmount) : 0;
-      var desiredAmount = centralRound_(item.desiredAmount);
+      var desiredAmount = centralRoundUp500_(item.desiredAmount);
       var delta = centralRound_(desiredAmount - syncedBefore);
 
       if (Math.abs(delta) < 0.01) {
@@ -346,22 +346,6 @@ function centralDesiredItems_(model, mappings) {
     }
   });
 
-  // Golpes/préstamos es el remanente: cada asignación positiva puede abonarse.
-  // Sin una fila explícita en Central_Map no se supone una cuenta de destino.
-  var debt = model.accounts.find(function(a){return a.id === 'pago_deudas';});
-  var debtMap = mappings.find(function(m){
-    return String(m.CuentaID || '') === 'pago_deudas' && !String(m.VehicleID || '');
-  });
-  if (debt && debtMap) {
-    out.push({
-      syncKey:String(debtMap.SyncKey || 'pago_deudas'),
-      cuentaId:'pago_deudas',
-      vehicleId:'',
-      desiredAmount:Math.max(0,num_(debt.assigned)),
-      map:debtMap
-    });
-  }
-
   var insurance = model.accounts.find(function(a){return a.id === 'seguros';});
   var assignedInsurance = centralFullyFunded_(insurance) ? num_(insurance.need) : 0;
   var totalInsurance = model.rows.reduce(function(sum,r){return sum + num_(r.insurance);},0);
@@ -527,4 +511,9 @@ function centralFindAccount_(accounts, id) {
 
 function centralRound_(value) {
   return Math.round(num_(value) * 100) / 100;
+}
+
+function centralRoundUp500_(value) {
+  var amount = Math.max(0, centralRound_(value));
+  return Math.ceil((amount - 0.000001) / 500) * 500;
 }
