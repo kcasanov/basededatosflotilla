@@ -37,6 +37,7 @@ button{border:0;border-radius:9px;padding:10px 13px;font-weight:800;cursor:point
 .lateMeta{font-size:12px;color:#667085;margin-top:3px;line-height:1.45}
 .modal{display:none;position:fixed;inset:0;background:rgba(7,26,51,.48);z-index:1000;align-items:center;justify-content:center;padding:18px}
 .modal.show{display:flex}.modalCard{background:#fff;width:min(520px,100%);border-radius:16px;padding:20px;box-shadow:0 22px 60px rgba(0,0,0,.25)}
+.globalFundingActions{display:flex;gap:10px;justify-content:flex-end;margin-top:18px}.globalFundingActions button{min-width:140px}.globalFundingModalCard h3{margin:0 0 8px}.globalFundingModalCard p{margin:0;color:var(--m);line-height:1.45}
 @media(max-width:850px){.weekKpis{grid-template-columns:1fr 1fr}.sectionHead,.weekTop{align-items:stretch;flex-direction:column}}
 @media(max-width:560px){.weekKpis{grid-template-columns:1fr}}
 
@@ -433,6 +434,17 @@ body.dark .vehicleControlCard,body.dark .uberForm,body.dark .legacySummary{backg
 
 </div>
 
+
+<div class="modal" id="globalFundingModal" aria-live="polite">
+  <div class="modalCard globalFundingModalCard">
+    <h3 id="globalFundingModalTitle">Aporte pendiente</h3>
+    <p id="globalFundingModalText"></p>
+    <div class="globalFundingActions">
+      <button id="globalFundingLaterButton" class="light" type="button">Dejar pendiente</button>
+      <button id="globalFundingApplyButton" class="dark" type="button">Aplicar al file global</button>
+    </div>
+  </div>
+</div>
 
 <div class="modal" id="configModal">
   <div class="modalCard wideModal">
