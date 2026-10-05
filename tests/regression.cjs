@@ -10,7 +10,7 @@ const el = id => {
 };
 const store = new Map();
 const localStore = new Map([['flotilla_device_id','device']]);
-const context = vm.createContext({console,Intl,Date,URL,AbortSignal,setTimeout,clearTimeout,encodeURIComponent,decodeURIComponent,
+const context = vm.createContext({console,Intl,Date,URL,AbortSignal,setTimeout,clearTimeout,setInterval,clearInterval,encodeURIComponent,decodeURIComponent,
   location:{pathname:'/'},document:{getElementById:el,addEventListener(){},querySelectorAll(){return [];},querySelector(){return null;}},
   sessionStorage:{getItem:k=>store.get(k),setItem:(k,v)=>store.set(k,v),removeItem:k=>store.delete(k)},
   localStorage:{getItem:k=>localStore.get(k)??null,setItem:(k,v)=>localStore.set(k,String(v)),removeItem:k=>localStore.delete(k)},
@@ -288,7 +288,7 @@ run("planDashboardV3=[];planDashboardLoadedV3=false;globalThis.planRenders=0;bac
 context.loadPlanDashboardV3(true).then(async()=>{
   eq(run('planDashboardLoadedV3'),true,'background plan marked ready');
   eq(run('planRenders'),3,'pending sections refreshed after plan load');
-  run("rowsForTuesday=()=>[];currentExpenses=()=>[{id:'casa',name:'Cuentas casa',need:25000,assigned:0,priority:'critical',order:1,type:'weekly'},{id:'omoda',name:'Omoda',need:50000,assigned:0,priority:'critical',order:2,type:'weekly'},{id:'pago_deudas',name:'Pago de deudas',need:0,assigned:0,priority:'low',order:3,type:'remainder'}];cashAllocationForWeek=()=>({operational:75000,debtRecovery:0,total:75000});backendCapabilities={globalAccountSyncReady:true};globalThis.centralCalls=[];globalThis.alerts=[];globalThis.confirmQueue=[true,true];confirm=()=>confirmQueue.shift()??true;alert=x=>alerts.push(String(x));backend=async(action,payload)=>{centralCalls.push({action,payload});if(action==='getGlobalFundingStatus')return {ok:true,weekDate:payload.weekDate,items:[]};return {ok:true,results:[{status:'OK'}],moved:[{beforeBalance:100000,delta:25000,afterBalance:125000}]};};");
+  run("rowsForTuesday=()=>[];currentExpenses=()=>[{id:'casa',name:'Cuentas casa',need:25000,assigned:0,priority:'critical',order:1,type:'weekly'},{id:'omoda',name:'Omoda',need:50000,assigned:0,priority:'critical',order:2,type:'weekly'},{id:'pago_deudas',name:'Pago de deudas',need:0,assigned:0,priority:'low',order:3,type:'remainder'}];cashAllocationForWeek=()=>({operational:75000,debtRecovery:0,total:75000});backendCapabilities={globalAccountSyncReady:true};globalThis.centralCalls=[];globalThis.alerts=[];globalThis.confirmQueue=[true,true];confirm=()=>confirmQueue.shift()??true;askGlobalFunding=async()=>confirmQueue.shift()??true;alert=x=>alerts.push(String(x));backend=async(action,payload)=>{centralCalls.push({action,payload});if(action==='getGlobalFundingStatus')return {ok:true,weekDate:payload.weekDate,items:[]};return {ok:true,results:[{status:'OK'}],moved:[{beforeBalance:100000,delta:25000,afterBalance:125000}]};};");
   eq(run("centralFundingSnapshot().casa.ready"),true,'fully funded home account is eligible for confirmation');
   eq(run("centralFundingSnapshot().omoda.ready"),true,'fully funded account is eligible for confirmation');
   eq(run("Object.keys(centralFundingSnapshot()).includes('pago_deudas')"),false,'debt remnant never prompts for Central');
@@ -304,10 +304,13 @@ context.loadPlanDashboardV3(true).then(async()=>{
   run("globalFundingStatusByWeek['2026-09-29']={ok:true,items:[{cuentaId:'omoda',pending:true,desiredAmount:50000,appliedAmount:0}]};weekOffset=0;crTodayUTC=()=>parseDate('2026-10-04');");
   context.renderExpenseAllocation([{id:'omoda',name:'Omoda',need:50000,assigned:50000,priority:'critical',order:1,type:'weekly'}],50000);
   eq(el('expenseBody').innerHTML.includes('Pendiente de aplicar en file global'),true,'pending global contribution stays visible beside the account');
-  run("globalFundingStatusByWeek['2026-09-29']={ok:true,items:[]};confirm=()=>false;");
+  run("globalFundingStatusByWeek['2026-09-29']={ok:true,items:[]};confirm=()=>false;askGlobalFunding=async()=>false;");
   await context.applyGlobalFundingAccount('omoda',{name:'Omoda',amount:50000},run("parseDate('2026-09-29')"),true);
   context.renderExpenseAllocation([{id:'omoda',name:'Omoda',need:50000,assigned:50000,priority:'critical',order:1,type:'weekly'}],50000);
   eq(el('expenseBody').innerHTML.includes('Pendiente de aplicar en file global'),true,'dismissed approval remains visible from shared local storage');
   eq(JSON.parse(localStore.get('flotilla_global_funding_pending_v1'))['2026-09-29'].omoda.amount,50000,'dismissed approval persists across tabs');
+  eq(run("typeof ensureGlobalFundingPoller"),'function','pending global contributions have a poller');
+  eq(run("typeof askGlobalFunding"),'function','global funding uses a persistent in-page modal');
+  stopGlobalFundingPoller();
   console.log(`${checks} regression checks passed; no external API was called.`);
 }).catch(error=>{console.error(error);process.exitCode=1;});
