@@ -26,6 +26,7 @@ let planPayments = [];
 const paymentState = Object.create(null);
 const globalFundingStatusByWeek = Object.create(null);
 const globalFundingStatusRequests = Object.create(null);
+const GLOBAL_FUNDING_PENDING_KEY = 'flotilla_global_funding_pending_v1';
 
 function crTodayUTC() {
   const parts = new Intl.DateTimeFormat('en-CA', {
@@ -383,9 +384,39 @@ function centralFundingSnapshot(tuesday = operationalTuesday()) {
       amount:Math.ceil(Math.max(0,e.need) / 500) * 500
     }]));
 }
+function readLocalGlobalFundingPending() {
+  try {
+    const raw = localStorage.getItem(GLOBAL_FUNDING_PENDING_KEY);
+    const data = raw ? JSON.parse(raw) : {};
+    return data && typeof data === 'object' ? data : {};
+  } catch (_) { return {}; }
+}
+function writeLocalGlobalFundingPending(data) {
+  try { localStorage.setItem(GLOBAL_FUNDING_PENDING_KEY, JSON.stringify(data || {})); } catch (_) {}
+}
+function rememberGlobalFundingPending(cuentaId, tuesday, account) {
+  const week = isoDate(tuesday);
+  const data = readLocalGlobalFundingPending();
+  data[week] = data[week] || {};
+  data[week][cuentaId] = {name:account?.name || cuentaId, amount:Number(account?.amount || 0), savedAt:Date.now()};
+  writeLocalGlobalFundingPending(data);
+}
+function clearGlobalFundingPending(cuentaId, tuesday) {
+  const week = isoDate(tuesday);
+  const data = readLocalGlobalFundingPending();
+  if (!data[week]?.[cuentaId]) return;
+  delete data[week][cuentaId];
+  if (!Object.keys(data[week]).length) delete data[week];
+  writeLocalGlobalFundingPending(data);
+}
+function localGlobalFundingPending(cuentaId, tuesday = weekDate()) {
+  return readLocalGlobalFundingPending()[isoDate(tuesday)]?.[cuentaId] || null;
+}
+
 function pendingGlobalFundingItem(cuentaId, tuesday = weekDate()) {
   const status = globalFundingStatusByWeek[isoDate(tuesday)];
-  return status?.items?.find(x => x.cuentaId === cuentaId && x.pending) || null;
+  const backendPending = status?.items?.find(x => x.cuentaId === cuentaId && x.pending) || null;
+  return backendPending || localGlobalFundingPending(cuentaId, tuesday);
 }
 async function refreshGlobalFundingStatus(tuesday = weekDate(), force = false) {
   if (typeof backendCapabilities === 'undefined' || !backendCapabilities.globalAccountSyncReady) return null;
@@ -400,6 +431,12 @@ async function refreshGlobalFundingStatus(tuesday = weekDate(), force = false) {
       });
       if (result?.ok && !result.disabled) {
         globalFundingStatusByWeek[week] = result;
+        const snapshot = centralFundingSnapshot(parseDate(week));
+        Object.entries(snapshot).forEach(([cuentaId, account]) => {
+          const item = result.items?.find(x => x.cuentaId === cuentaId);
+          if (account?.ready && item && !item.pending) clearGlobalFundingPending(cuentaId, parseDate(week));
+          if (!account?.ready) clearGlobalFundingPending(cuentaId, parseDate(week));
+        });
         if (isoDate(weekDate()) === week) renderWeek();
       }
       return result;
@@ -412,6 +449,7 @@ async function refreshGlobalFundingStatus(tuesday = weekDate(), force = false) {
   return globalFundingStatusRequests[week];
 }
 async function applyGlobalFundingAccount(cuentaId, account, tuesday = weekDate(), ask = true) {
+  rememberGlobalFundingPending(cuentaId, tuesday, account);
   if (ask && !confirm(`Se cubrió ${account.name} (${money(account.amount)}). ¿Deseás sumar este monto a su cuenta en el archivo global de Drive?`)) {
     await refreshGlobalFundingStatus(tuesday, true);
     return false;
@@ -436,6 +474,9 @@ async function applyGlobalFundingAccount(cuentaId, account, tuesday = weekDate()
         ? 'El backend calculó que no había un cambio pendiente para aplicar.'
         : result.message || 'La operación terminó sin registrar un movimiento.';
       alert('No se modificó el archivo global de Drive.\n\n' + reason);
+    }
+    if (moved.length > 0 || (result.results || []).some(x => ['SIN_CAMBIOS','RECUPERADA'].includes(x.status))) {
+      clearGlobalFundingPending(cuentaId, tuesday);
     }
     await refreshGlobalFundingStatus(tuesday, true);
     return moved.length > 0;
@@ -481,13 +522,18 @@ function renderExpenseAllocation(expenses, available) {
     const falta = Math.max(0, e.need - e.assigned);
     let state = falta <= .01 ? '🟢 Completa' : e.assigned > 0 ? '🟡 Parcial' : (e.priority === 'critical' ? '🔴 Pendiente' : '⚪ Pendiente');
     if ((e.id === 'pago_deudas' || e.name === 'Pago de deudas') && incoming > 0) state = '🟡 Pendiente de completar';
-    const globalPending = pendingGlobalFundingItem(e.id);
+    if (falta > .01) clearGlobalFundingPending(e.id, weekDate());
+    const globalPending = falta <= .01 ? pendingGlobalFundingItem(e.id) : null;
     const globalButton = globalPending
       ? `<div style="margin-top:6px"><button class="light miniBtn" onclick="retryGlobalFunding('${e.id}')">Pendiente de aplicar en file global</button></div>`
       : '';
     return `<tr><td><span class="priority ${priorityClass(e.priority)}">${priorityLabel(e.priority)}</span></td><td>${e.name}${globalButton}</td><td>${money(e.need)}</td><td>${money(e.assigned)}</td><td>${money(falta)}</td><td>${state}</td></tr>`;
   }).join('');
 }
+window.addEventListener?.('storage', event => {
+  if (event.key === GLOBAL_FUNDING_PENDING_KEY) renderWeek();
+});
+
 function renderExpenseConfig() {
   $('expenseConfigBody').innerHTML = expenseConfig.slice().sort((a, b) => a.order - b.order).map(e => `<tr>
     <td>${e.order}</td><td>${e.name}</td><td>${e.type}</td><td>${e.rule}</td>
