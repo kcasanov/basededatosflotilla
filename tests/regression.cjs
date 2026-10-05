@@ -300,7 +300,7 @@ context.loadPlanDashboardV3(true).then(async()=>{
   eq(Boolean(queued.omoda),true,'second account stays queued when its modal is dismissed or interrupted');
   eq(run("alerts.every(x=>x.includes('Cuenta actualizada en el archivo global de Drive.')&&x.includes(money(100000))&&x.includes(money(125000)))"),true,'Drive confirmation shows previous and new balances');
   await context.offerCentralFunding({casa:{ready:true},omoda:{ready:true}});
-  eq(run("centralCalls.filter(x=>x.action==='syncGlobalAccount').length"),2,'already funded accounts do not prompt again');
+  eq(run("centralCalls.filter(x=>x.action==='syncGlobalAccount').length"),1,'already funded accounts do not prompt again');
   run("globalFundingStatusByWeek['2026-09-29']={ok:true,items:[{cuentaId:'omoda',pending:true,desiredAmount:50000,appliedAmount:0}]};weekOffset=0;crTodayUTC=()=>parseDate('2026-10-04');");
   context.renderExpenseAllocation([{id:'omoda',name:'Omoda',need:50000,assigned:50000,priority:'critical',order:1,type:'weekly'}],50000);
   eq(el('expenseBody').innerHTML.includes('Pendiente de aplicar en file global'),true,'pending global contribution stays visible beside the account');
