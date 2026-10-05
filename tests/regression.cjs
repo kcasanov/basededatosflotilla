@@ -297,6 +297,6 @@ context.loadPlanDashboardV3(true).then(async()=>{
   eq(run("centralCalls.filter(x=>x.action==='syncGlobalAccount').length"),2,'already funded accounts do not prompt again');
   run("globalFundingStatusByWeek['2026-09-29']={ok:true,items:[{cuentaId:'omoda',pending:true,desiredAmount:50000,appliedAmount:0}]};weekOffset=0;crTodayUTC=()=>parseDate('2026-10-04');");
   context.renderExpenseAllocation([{id:'omoda',name:'Omoda',need:50000,assigned:50000,priority:'critical',order:1,type:'weekly'}],50000);
-  eq(run("el('expenseBody').innerHTML.includes('Pendiente de aplicar en file global')"),true,'pending global contribution stays visible beside the account');
+  eq(el('expenseBody').innerHTML.includes('Pendiente de aplicar en file global'),true,'pending global contribution stays visible beside the account');
   console.log(`${checks} regression checks passed; no external API was called.`);
 }).catch(error=>{console.error(error);process.exitCode=1;});
