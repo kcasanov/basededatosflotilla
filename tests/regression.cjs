@@ -63,6 +63,9 @@ run('movementHistoryLimit+=10;renderMovementHistory();');
 eq(el('moreMovements').hidden,true,'pagination exhausted');
 eq((el('movementHistory').innerHTML.match(/<tr>/g)||[]).length,21,'history rows use the five-column table');
 eq(['Vehículo','Fecha de actualización','Fecha de cuota pagada','Monto pagado','Acción'].every(label=>fs.readFileSync('index.html','utf8').includes('<th>'+label+'</th>')),true,'history headings');
+run("planPayments=[];");
+eq(run("morningEventsBetween({id:'morning',name:'Morning',weekly:110000,start:'2026-01-01',end:'2026-12-31'},parseDate('2026-01-01'),parseDate('2026-02-28')).map(x=>x.date)"),['2026-01-15','2026-01-31','2026-02-15','2026-02-28'],'Morning charges on the 15th and true month end');
+eq(run("morningEventsBetween({id:'morning',name:'Morning',weekly:110000,start:'2026-03-01',end:'2026-03-31'},parseDate('2026-03-01'),parseDate('2026-03-31')).map(x=>x.date)"),['2026-03-15','2026-03-31'],'Morning uses the 31st in 31-day months');
 
 class Sheet {
   constructor(rows){this.rows=structuredClone(rows);this.max=100;}
