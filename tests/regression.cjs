@@ -9,9 +9,11 @@ const el = id => {
   return elements.get(id);
 };
 const store = new Map();
+const localStore = new Map([['flotilla_device_id','device']]);
 const context = vm.createContext({console,Intl,Date,URL,AbortSignal,setTimeout,clearTimeout,encodeURIComponent,decodeURIComponent,
   location:{pathname:'/'},document:{getElementById:el,addEventListener(){},querySelectorAll(){return [];},querySelector(){return null;}},
-  sessionStorage:{getItem:k=>store.get(k),setItem:(k,v)=>store.set(k,v),removeItem:k=>store.delete(k)},localStorage:{getItem(){return 'device';}},
+  sessionStorage:{getItem:k=>store.get(k),setItem:(k,v)=>store.set(k,v),removeItem:k=>store.delete(k)},
+  localStorage:{getItem:k=>localStore.get(k)??null,setItem:(k,v)=>localStore.set(k,String(v)),removeItem:k=>localStore.delete(k)},
   alert(){},confirm(){return true;},window:{}});
 context.window = context;
 vm.runInContext(fs.readFileSync('app.js','utf8'),context);
@@ -298,5 +300,10 @@ context.loadPlanDashboardV3(true).then(async()=>{
   run("globalFundingStatusByWeek['2026-09-29']={ok:true,items:[{cuentaId:'omoda',pending:true,desiredAmount:50000,appliedAmount:0}]};weekOffset=0;crTodayUTC=()=>parseDate('2026-10-04');");
   context.renderExpenseAllocation([{id:'omoda',name:'Omoda',need:50000,assigned:50000,priority:'critical',order:1,type:'weekly'}],50000);
   eq(el('expenseBody').innerHTML.includes('Pendiente de aplicar en file global'),true,'pending global contribution stays visible beside the account');
+  run("globalFundingStatusByWeek['2026-09-29']={ok:true,items:[]};confirm=()=>false;");
+  await context.applyGlobalFundingAccount('omoda',{name:'Omoda',amount:50000},run("parseDate('2026-09-29')"),true);
+  context.renderExpenseAllocation([{id:'omoda',name:'Omoda',need:50000,assigned:50000,priority:'critical',order:1,type:'weekly'}],50000);
+  eq(el('expenseBody').innerHTML.includes('Pendiente de aplicar en file global'),true,'dismissed approval remains visible from shared local storage');
+  eq(JSON.parse(localStore.get('flotilla_global_funding_pending_v1'))['2026-09-29'].omoda.amount,50000,'dismissed approval persists across tabs');
   console.log(`${checks} regression checks passed; no external API was called.`);
 }).catch(error=>{console.error(error);process.exitCode=1;});
