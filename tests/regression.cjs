@@ -294,6 +294,10 @@ context.loadPlanDashboardV3(true).then(async()=>{
   eq(run("Object.keys(centralFundingSnapshot()).includes('pago_deudas')"),false,'debt remnant never prompts for Central');
   await context.offerCentralFunding({omoda:{ready:false}});
   eq(run("centralCalls.filter(x=>x.action==='syncGlobalAccount').map(x=>[x.action,x.payload.cuentaId,x.payload.weekDate])"),[['syncGlobalAccount','casa','2026-09-29'],['syncGlobalAccount','omoda','2026-09-29']],'confirmation submits each newly funded account to Drive');
+  run("writeLocalGlobalFundingPending({});confirmQueue=[true,false];centralCalls=[];alerts=[];");
+  await context.offerCentralFunding({casa:{ready:false},omoda:{ready:false}},run("parseDate('2026-09-29')"));
+  const queued=JSON.parse(localStore.get('flotilla_global_funding_pending_v1')||'{}')['2026-09-29']||{};
+  eq(Boolean(queued.omoda),true,'second account stays queued when its modal is dismissed or interrupted');
   eq(run("alerts.every(x=>x.includes('Cuenta actualizada en el archivo global de Drive.')&&x.includes(money(100000))&&x.includes(money(125000)))"),true,'Drive confirmation shows previous and new balances');
   await context.offerCentralFunding({casa:{ready:true},omoda:{ready:true}});
   eq(run("centralCalls.filter(x=>x.action==='syncGlobalAccount').length"),2,'already funded accounts do not prompt again');
