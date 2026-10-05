@@ -311,6 +311,6 @@ context.loadPlanDashboardV3(true).then(async()=>{
   eq(JSON.parse(localStore.get('flotilla_global_funding_pending_v1'))['2026-09-29'].omoda.amount,50000,'dismissed approval persists across tabs');
   eq(run("typeof ensureGlobalFundingPoller"),'function','pending global contributions have a poller');
   eq(run("typeof askGlobalFunding"),'function','global funding uses a persistent in-page modal');
-  stopGlobalFundingPoller();
+  run("stopGlobalFundingPoller()");
   console.log(`${checks} regression checks passed; no external API was called.`);
 }).catch(error=>{console.error(error);process.exitCode=1;});
