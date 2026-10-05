@@ -433,8 +433,6 @@ async function refreshGlobalFundingStatus(tuesday = weekDate(), force = false) {
         globalFundingStatusByWeek[week] = result;
         const snapshot = centralFundingSnapshot(parseDate(week));
         Object.entries(snapshot).forEach(([cuentaId, account]) => {
-          const item = result.items?.find(x => x.cuentaId === cuentaId);
-          if (account?.ready && item && !item.pending) clearGlobalFundingPending(cuentaId, parseDate(week));
           if (!account?.ready) clearGlobalFundingPending(cuentaId, parseDate(week));
         });
         if (isoDate(weekDate()) === week) renderWeek();
@@ -497,8 +495,14 @@ async function retryGlobalFunding(cuentaId) {
 async function offerCentralFunding(before, tuesday = operationalTuesday()) {
   if (typeof backendCapabilities === 'undefined' || !backendCapabilities.globalAccountSyncReady) return;
   const after = centralFundingSnapshot(tuesday);
-  for (const [cuentaId, account] of Object.entries(after)) {
-    if (!account.ready || before?.[cuentaId]?.ready) continue;
+  const newlyReady = Object.entries(after).filter(([cuentaId, account]) =>
+    account.ready && !before?.[cuentaId]?.ready
+  );
+  newlyReady.forEach(([cuentaId, account]) =>
+    rememberGlobalFundingPending(cuentaId, tuesday, account)
+  );
+  if (isoDate(weekDate()) === isoDate(tuesday)) renderWeek();
+  for (const [cuentaId, account] of newlyReady) {
     await applyGlobalFundingAccount(cuentaId, account, tuesday, true);
   }
   await refreshGlobalFundingStatus(tuesday, true);
