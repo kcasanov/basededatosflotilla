@@ -24,6 +24,11 @@ let expenseConfig = [];
 let contractVehicles = [];
 let planPayments = [];
 const paymentState = Object.create(null);
+const globalFundingStatusByWeek = Object.create(null);
+const globalFundingStatusRequests = Object.create(null);
+const GLOBAL_FUNDING_PENDING_KEY = 'flotilla_global_funding_pending_v1';
+let globalFundingPollTimer = null;
+let globalFundingModalResolver = null;
 
 function crTodayUTC() {
   const parts = new Intl.DateTimeFormat('en-CA', {
@@ -83,6 +88,40 @@ function paymentKey(vehicleId, scheduledDate) { return vehicleId + '|' + schedul
 function getPaymentState(vehicleId, scheduledDate) {
   return paymentState[paymentKey(vehicleId, scheduledDate)] || { received: 0, realDate: '', status: 'Pendiente', pagoId: '' };
 }
+function previousCalendarMonthDate(date) {
+  const d = new Date(date);
+  const firstTarget = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() - 1, 1));
+  const lastDay = new Date(Date.UTC(firstTarget.getUTCFullYear(), firstTarget.getUTCMonth() + 1, 0)).getUTCDate();
+  return new Date(Date.UTC(firstTarget.getUTCFullYear(), firstTarget.getUTCMonth(), Math.min(d.getUTCDate(), lastDay)));
+}
+function paymentDistributionForMovement(scheduledDate, realDate) {
+  const scheduled = normalizeSheetDate(scheduledDate), real = normalizeSheetDate(realDate);
+  if (!scheduled || !real) return { week: '', debtRecovery: false };
+  const scheduledDateObj = parseDate(scheduled), realDateObj = parseDate(real);
+  const cutoff = previousCalendarMonthDate(realDateObj);
+  const debtRecovery = scheduledDateObj < cutoff;
+  const target = debtRecovery ? operationalTuesday(realDateObj) : operationalTuesday(scheduledDateObj);
+  return { week: isoDate(target), debtRecovery };
+}
+function cashAllocationForWeek(tuesday = weekDate()) {
+  const targetWeek = isoDate(tuesday);
+  let operational = 0, debtRecovery = 0;
+  Object.entries(paymentState).forEach(([key, state]) => {
+    const scheduledDate = key.split('|')[1] || '';
+    const movements = state.movements?.length ? state.movements : [{date:state.realDate,amount:state.received}];
+    movements.forEach(movement => {
+      const allocation = paymentDistributionForMovement(scheduledDate, movement.date);
+      if (allocation.week !== targetWeek) return;
+      const amount = Number(movement.amount || 0);
+      if (allocation.debtRecovery) debtRecovery += amount;
+      else operational += amount;
+    });
+  });
+  return { operational, debtRecovery, total: operational + debtRecovery };
+}
+function receivedCashForWeek(tuesday = weekDate()) {
+  return cashAllocationForWeek(tuesday).total;
+}
 
 function isPendingStatus(value) {
   return ['PENDIENTE','PARCIAL','CERRADA_PENDIENTE'].includes(String(value || '').trim().toUpperCase());
@@ -106,6 +145,7 @@ function getDeviceId() {
 }
 async function backend(action, payload = {}) {
   if(action==='syncCentral')return {ok:true,disabled:true};
+  if(action==='syncGlobalAccount' && (typeof backendCapabilities === 'undefined' || !backendCapabilities.globalAccountSyncReady))return {ok:true,disabled:true};
   const res = await fetch(BACKEND_URL, {
     method: 'POST',
     signal: AbortSignal.timeout(45000),
@@ -213,7 +253,7 @@ function morningEventsBetween(v, start, end) {
   while (cursor <= end) {
     const y = cursor.getUTCFullYear(), m = cursor.getUTCMonth();
     const last = monthEndDay(y, m);
-    [15, Math.min(30, last)].forEach(day => {
+    [15, last].forEach(day => {
       const d = new Date(Date.UTC(y, m, day));
       if (d >= start && d <= end && (!hardStart || d >= hardStart) && (!hardEnd || d <= hardEnd)) {
         out.push({
@@ -320,14 +360,206 @@ function currentExpenses(expectedRows, tuesday = weekDate()) {
       return { ...e, need, assigned: 0 };
     });
 }
-function allocateExpenses(rows, available) {
-  let remaining = available;
+function allocateExpenses(rows, available, debtRecovery = 0) {
+  let remaining = Math.max(0, Number(available || 0));
   const regular = rows.filter(x => x.type !== 'remainder')
     .sort((a, b) => priorityRank(a.priority) - priorityRank(b.priority) || a.order - b.order);
   regular.forEach(e => { e.assigned = Math.min(e.need, remaining); remaining -= e.assigned; });
   const rem = rows.find(x => x.type === 'remainder');
-  if (rem) { rem.need = Math.max(0, remaining); rem.assigned = Math.max(0, remaining); remaining = 0; }
+  if (rem) {
+    const directDebt = Math.max(0, Number(debtRecovery || 0));
+    rem.need = Math.max(0, remaining + directDebt);
+    rem.assigned = Math.max(0, remaining + directDebt);
+    remaining = 0;
+  }
   return rows;
+}
+function centralFundingSnapshot(tuesday = operationalTuesday()) {
+  const rows = rowsForTuesday(tuesday);
+  const cash = cashAllocationForWeek(tuesday);
+  const expenses = allocateExpenses(currentExpenses(rows, tuesday), cash.operational, cash.debtRecovery);
+  return Object.fromEntries(expenses
+    .filter(e => ['casa','omoda','coopealianza','u','seguros'].includes(e.id))
+    .map(e => [e.id, {
+      name:e.name,
+      ready:e.need > .005 && e.assigned >= e.need - .005,
+      amount:Math.ceil(Math.max(0,e.need) / 500) * 500
+    }]));
+}
+function readLocalGlobalFundingPending() {
+  try {
+    const raw = localStorage.getItem(GLOBAL_FUNDING_PENDING_KEY);
+    const data = raw ? JSON.parse(raw) : {};
+    return data && typeof data === 'object' ? data : {};
+  } catch (_) { return {}; }
+}
+function writeLocalGlobalFundingPending(data) {
+  try { localStorage.setItem(GLOBAL_FUNDING_PENDING_KEY, JSON.stringify(data || {})); } catch (_) {}
+}
+function rememberGlobalFundingPending(cuentaId, tuesday, account) {
+  const week = isoDate(tuesday);
+  const data = readLocalGlobalFundingPending();
+  data[week] = data[week] || {};
+  data[week][cuentaId] = {name:account?.name || cuentaId, amount:Number(account?.amount || 0), savedAt:Date.now()};
+  writeLocalGlobalFundingPending(data);
+}
+function clearGlobalFundingPending(cuentaId, tuesday) {
+  const week = isoDate(tuesday);
+  const data = readLocalGlobalFundingPending();
+  if (!data[week]?.[cuentaId]) return;
+  delete data[week][cuentaId];
+  if (!Object.keys(data[week]).length) delete data[week];
+  writeLocalGlobalFundingPending(data);
+}
+function localGlobalFundingPending(cuentaId, tuesday = weekDate()) {
+  return readLocalGlobalFundingPending()[isoDate(tuesday)]?.[cuentaId] || null;
+}
+
+function hasGlobalFundingPending(tuesday = weekDate()) {
+  const week = isoDate(tuesday);
+  const local = readLocalGlobalFundingPending()[week] || {};
+  const remote = globalFundingStatusByWeek[week]?.items || [];
+  return Object.keys(local).length > 0 || remote.some(x => x.pending);
+}
+function stopGlobalFundingPoller() {
+  if (globalFundingPollTimer) clearInterval(globalFundingPollTimer);
+  globalFundingPollTimer = null;
+}
+function ensureGlobalFundingPoller() {
+  if (!hasGlobalFundingPending()) {
+    stopGlobalFundingPoller();
+    return;
+  }
+  if (globalFundingPollTimer) return;
+  globalFundingPollTimer = setInterval(async () => {
+    if (!hasGlobalFundingPending()) return stopGlobalFundingPoller();
+    await refreshGlobalFundingStatus(weekDate(), true);
+    renderWeek();
+    if (!hasGlobalFundingPending()) stopGlobalFundingPoller();
+  }, 5000);
+}
+function askGlobalFunding(account) {
+  const modal = $('globalFundingModal');
+  if (!modal) return Promise.resolve(confirm(`Se cubrió ${account.name} (${money(account.amount)}). ¿Deseás sumar este monto a su cuenta en el archivo global de Drive?`));
+  if (globalFundingModalResolver) {
+    globalFundingModalResolver(false);
+    globalFundingModalResolver = null;
+  }
+  $('globalFundingModalTitle').textContent = `Aporte pendiente · ${account.name}`;
+  $('globalFundingModalText').textContent = `Se cubrió ${account.name} por ${money(account.amount)}. ¿Deseás aplicar este monto al archivo global de Drive?`;
+  modal.classList.add('show');
+  return new Promise(resolve => {
+    globalFundingModalResolver = resolve;
+    const finish = value => {
+      modal.classList.remove('show');
+      globalFundingModalResolver = null;
+      resolve(value);
+    };
+    $('globalFundingApplyButton').onclick = () => finish(true);
+    $('globalFundingLaterButton').onclick = () => finish(false);
+  });
+}
+
+function pendingGlobalFundingItem(cuentaId, tuesday = weekDate()) {
+  const status = globalFundingStatusByWeek[isoDate(tuesday)];
+  const backendPending = status?.items?.find(x => x.cuentaId === cuentaId && x.pending) || null;
+  return backendPending || localGlobalFundingPending(cuentaId, tuesday);
+}
+async function refreshGlobalFundingStatus(tuesday = weekDate(), force = false) {
+  if (typeof backendCapabilities === 'undefined' || !backendCapabilities.globalAccountSyncReady) return null;
+  const week = isoDate(tuesday);
+  if (!force && globalFundingStatusByWeek[week]) return globalFundingStatusByWeek[week];
+  if (globalFundingStatusRequests[week]) return globalFundingStatusRequests[week];
+  globalFundingStatusRequests[week] = (async () => {
+    try {
+      const result = await backend('getGlobalFundingStatus', {
+        sessionToken:sessionStorage.getItem(SESSION_KEY),
+        weekDate:week
+      });
+      if (result?.ok && !result.disabled) {
+        globalFundingStatusByWeek[week] = result;
+        const snapshot = centralFundingSnapshot(parseDate(week));
+        Object.entries(snapshot).forEach(([cuentaId, account]) => {
+          if (!account?.ready) clearGlobalFundingPending(cuentaId, parseDate(week));
+        });
+        if (isoDate(weekDate()) === week) renderWeek();
+      }
+      return result;
+    } catch (_) {
+      return null;
+    } finally {
+      delete globalFundingStatusRequests[week];
+    }
+  })();
+  return globalFundingStatusRequests[week];
+}
+async function applyGlobalFundingAccount(cuentaId, account, tuesday = weekDate(), ask = true) {
+  rememberGlobalFundingPending(cuentaId, tuesday, account);
+  ensureGlobalFundingPoller();
+  if (ask && !await askGlobalFunding(account)) {
+    await refreshGlobalFundingStatus(tuesday, true);
+    ensureGlobalFundingPoller();
+    renderWeek();
+    return false;
+  }
+  try {
+    const result = await backend('syncGlobalAccount', {
+      sessionToken:sessionStorage.getItem(SESSION_KEY),
+      weekDate:isoDate(tuesday), cuentaId
+    });
+    if (!result.ok || result.disabled || (result.results || []).some(x => x.error)) {
+      throw new Error(result.message || (result.results || []).find(x => x.error)?.error || 'No se pudo actualizar el archivo global.');
+    }
+    const moved = Array.isArray(result.moved) ? result.moved : [];
+    if (moved.length) {
+      const detail = moved.map(x =>
+        `${account.name}: ${money(x.beforeBalance)} → ${money(x.afterBalance)} (${x.delta >= 0 ? '+' : ''}${money(x.delta)})`
+      ).join('\n');
+      alert('Cuenta actualizada en el archivo global de Drive.\n\n' + detail);
+    } else {
+      const row = (result.results || [])[0] || {};
+      const reason = row.status === 'SIN_CAMBIOS'
+        ? 'El backend calculó que no había un cambio pendiente para aplicar.'
+        : result.message || 'La operación terminó sin registrar un movimiento.';
+      alert('No se modificó el archivo global de Drive.\n\n' + reason);
+    }
+    if (moved.length > 0 || (result.results || []).some(x => ['SIN_CAMBIOS','RECUPERADA'].includes(x.status))) {
+      clearGlobalFundingPending(cuentaId, tuesday);
+    }
+    await refreshGlobalFundingStatus(tuesday, true);
+    if (hasGlobalFundingPending(tuesday)) ensureGlobalFundingPoller(); else stopGlobalFundingPoller();
+    renderWeek();
+    return moved.length > 0;
+  } catch (error) {
+    alert(error.message || 'No se pudo actualizar el archivo global.');
+    await refreshGlobalFundingStatus(tuesday, true);
+    ensureGlobalFundingPoller();
+    renderWeek();
+    return false;
+  }
+}
+async function retryGlobalFunding(cuentaId) {
+  const tuesday = weekDate();
+  const snapshot = centralFundingSnapshot(tuesday);
+  const account = snapshot[cuentaId];
+  if (!account?.ready) return alert('Esta cuenta ya no está completamente cubierta.');
+  await applyGlobalFundingAccount(cuentaId, account, tuesday, true);
+}
+
+async function offerCentralFunding(before, tuesday = operationalTuesday()) {
+  if (typeof backendCapabilities === 'undefined' || !backendCapabilities.globalAccountSyncReady) return;
+  const after = centralFundingSnapshot(tuesday);
+  const newlyReady = Object.entries(after).filter(([cuentaId, account]) =>
+    account.ready && !before?.[cuentaId]?.ready
+  );
+  newlyReady.forEach(([cuentaId, account]) =>
+    rememberGlobalFundingPending(cuentaId, tuesday, account)
+  );
+  if (isoDate(weekDate()) === isoDate(tuesday)) renderWeek();
+  for (const [cuentaId, account] of newlyReady) {
+    await applyGlobalFundingAccount(cuentaId, account, tuesday, true);
+  }
+  await refreshGlobalFundingStatus(tuesday, true);
 }
 function renderExpenseAllocation(expenses, available) {
   const used = expenses.reduce((s, e) => s + e.assigned, 0);
@@ -348,9 +580,29 @@ function renderExpenseAllocation(expenses, available) {
     const falta = Math.max(0, e.need - e.assigned);
     let state = falta <= .01 ? '🟢 Completa' : e.assigned > 0 ? '🟡 Parcial' : (e.priority === 'critical' ? '🔴 Pendiente' : '⚪ Pendiente');
     if ((e.id === 'pago_deudas' || e.name === 'Pago de deudas') && incoming > 0) state = '🟡 Pendiente de completar';
-    return `<tr><td><span class="priority ${priorityClass(e.priority)}">${priorityLabel(e.priority)}</span></td><td>${e.name}</td><td>${money(e.need)}</td><td>${money(e.assigned)}</td><td>${money(falta)}</td><td>${state}</td></tr>`;
+    if (falta > .01) clearGlobalFundingPending(e.id, weekDate());
+    const globalPending = falta <= .01 ? pendingGlobalFundingItem(e.id) : null;
+    const globalButton = globalPending
+      ? `<div style="margin-top:6px"><button class="light miniBtn" onclick="retryGlobalFunding('${e.id}')">Pendiente de aplicar en file global</button></div>`
+      : '';
+    return `<tr><td><span class="priority ${priorityClass(e.priority)}">${priorityLabel(e.priority)}</span></td><td>${e.name}${globalButton}</td><td>${money(e.need)}</td><td>${money(e.assigned)}</td><td>${money(falta)}</td><td>${state}</td></tr>`;
   }).join('');
 }
+window.addEventListener?.('storage', event => {
+  if (event.key === GLOBAL_FUNDING_PENDING_KEY) {
+    renderWeek();
+    ensureGlobalFundingPoller();
+  }
+});
+document.addEventListener?.('visibilitychange', () => {
+  if (!document.hidden && hasGlobalFundingPending()) {
+    void refreshGlobalFundingStatus(weekDate(), true).then(() => {
+      renderWeek();
+      ensureGlobalFundingPoller();
+    });
+  }
+});
+
 function renderExpenseConfig() {
   $('expenseConfigBody').innerHTML = expenseConfig.slice().sort((a, b) => a.order - b.order).map(e => `<tr>
     <td>${e.order}</td><td>${e.name}</td><td>${e.type}</td><td>${e.rule}</td>
@@ -367,7 +619,8 @@ function renderWeek() {
 
   const rows = rowsForCurrentWeek();
   const expected = rows.reduce((s, r) => s + r.amount, 0);
-  const received = rows.reduce((s, r) => s + r.received, 0);
+  const cash = cashAllocationForWeek(d);
+  const received = cash.total;
   const lateRows = getLateRows();
   const late = lateRows.reduce((s, r) => s + r.missing, 0);
   const pending = rows.reduce((s,r)=>s+(r.historicalApplied?0:Math.max(0,r.amount-r.received)),0) + late;
@@ -394,24 +647,31 @@ function renderWeek() {
     <button class="dark" onclick="openLatePayment(${i})">Marcar recibido</button>
   </div>`).join('') : '<div class="placeholder">No hay ingresos atrasados.</div>';
 
-  const expenses = allocateExpenses(currentExpenses(rows, d), received);
+  const expenses = allocateExpenses(currentExpenses(rows, d), cash.operational, cash.debtRecovery);
   renderExpenseAllocation(expenses, received);
   renderSummary();
+  void refreshGlobalFundingStatus(d).then(() => {
+    if (hasGlobalFundingPending(d)) ensureGlobalFundingPoller();
+  });
 }
 async function markWeekRowPaid(encodedKey) {
   const key = decodeURIComponent(encodedKey);
   const row = rowsForCurrentWeek().find(r => r.key === key);
   if (!row) return;
   const sessionToken = sessionStorage.getItem(SESSION_KEY);
+  const realDate = isoDate(crTodayUTC());
+  const fundingWeek = paymentDistributionForMovement(row.date, realDate);
+  const fundingTuesday = fundingWeek.week ? parseDate(fundingWeek.week) : operationalTuesday();
+  const beforeCentral = centralFundingSnapshot(fundingTuesday);
   try {
     const response = await backend('markPayment', {
       sessionToken, planId: row.planId || row.key, vehicleId: row.vehicleId,
-      fechaProgramada: row.date, fechaReal: isoDate(crTodayUTC()),
+      fechaProgramada: row.date, fechaReal: realDate,
       montoEsperado: row.amount, montoRecibido: row.amount, estado: 'PAGADO'
     });
     if (!response.ok) throw new Error(response.message || 'No se pudo registrar el pago');
-    paymentState[key] = { received: row.amount, realDate: isoDate(crTodayUTC()), status: 'PAGADO', pagoId: response.pagoId };
-    renderWeek(); renderVehicles();
+    await loadProductionData(); renderAll();
+    await offerCentralFunding(beforeCentral, fundingTuesday);
   } catch (e) { alert(e.message || 'Error registrando el pago'); }
 }
 async function unmarkPaid(encodedKey) {
@@ -428,9 +688,10 @@ async function unmarkPaid(encodedKey) {
   } catch (e) { alert(e.message || 'Error desmarcando el pago'); }
 }
 function distributeCurrentWeek() {
+  const tuesday = weekDate();
   const rows = rowsForCurrentWeek();
-  const received = rows.reduce((s, r) => s + r.received, 0);
-  renderExpenseAllocation(allocateExpenses(currentExpenses(rows, weekDate()), received), received);
+  const cash = cashAllocationForWeek(tuesday);
+  renderExpenseAllocation(allocateExpenses(currentExpenses(rows, tuesday), cash.operational, cash.debtRecovery), cash.total);
 }
 function openLatePayment(i) {
   const rows = getLateRows();
@@ -447,15 +708,19 @@ async function confirmLatePayment() {
   const mode = $('lateAllocationMode').value;
   const note = 'Asignación: ' + mode + (mode === 'manual' ? ' · ' + $('manualLateAccount').value : '');
   const sessionToken = sessionStorage.getItem(SESSION_KEY);
+  const realDate = isoDate(crTodayUTC());
+  const fundingWeek = paymentDistributionForMovement(r.date, realDate);
+  const fundingTuesday = fundingWeek.week ? parseDate(fundingWeek.week) : operationalTuesday();
+  const beforeCentral = centralFundingSnapshot(fundingTuesday);
   try {
     const response = await backend('markPayment', {
       sessionToken, planId: r.planId || r.key, vehicleId: r.vehicleId,
-      fechaProgramada: r.date, fechaReal: isoDate(crTodayUTC()),
+      fechaProgramada: r.date, fechaReal: realDate,
       montoEsperado: r.amount, montoRecibido: r.amount, estado: 'PAGADO_ATRASADO', nota: note
     });
     if (!response.ok) throw new Error(response.message || 'No se pudo registrar');
-    paymentState[r.key] = { received: r.amount, realDate: isoDate(crTodayUTC()), status: 'PAGADO_ATRASADO', pagoId: response.pagoId, note };
-    closeLateModal(); renderWeek(); renderVehicles();
+    closeLateModal(); await loadProductionData(); renderAll();
+    await offerCentralFunding(beforeCentral, fundingTuesday);
   } catch (e) { alert(e.message || 'Error registrando el pago atrasado'); }
 }
 
@@ -660,7 +925,7 @@ function monthProjectionSummary() {
   const d = weekDate(); return projectMonth(d.getUTCFullYear(), d.getUTCMonth(), 0, 0);
 }
 function renderSummary() {
-  const rows = rowsForCurrentWeek(), expected = rows.reduce((s, r) => s + r.amount, 0), received = rows.reduce((s, r) => s + r.received, 0), lateRows = getLateRows(), late = lateRows.reduce((s, r) => s + r.missing, 0);
+  const rows = rowsForCurrentWeek(), expected = rows.reduce((s, r) => s + r.amount, 0), received = receivedCashForWeek(weekDate()), lateRows = getLateRows(), late = lateRows.reduce((s, r) => s + r.missing, 0);
   $('sumWeekExpected').textContent = money(expected); $('sumWeekReceived').textContent = money(received); $('sumLate').textContent = money(late);
   const wd = weekDate(), weekStart = new Date(wd), weekEnd = new Date(wd); weekStart.setUTCDate(wd.getUTCDate() - 1); weekEnd.setUTCDate(wd.getUTCDate() + 5);
   const fmtLong = new Intl.DateTimeFormat('es-CR', { day: '2-digit', month: 'long', year: 'numeric', timeZone: 'UTC' });

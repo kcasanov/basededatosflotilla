@@ -1,14 +1,19 @@
 const express = require('express');
 const path = require('path');
-const fs = require('fs');
 
 const app = express();
 const PORT = 3000;
 
 app.use(express.text({ type: '*/*', limit: '2mb' }));
 
-const APPS_SCRIPT_URL =
+const PRODUCTION_APPS_SCRIPT_URL =
   'https://script.google.com/macros/s/AKfycby5hk0KM34Ts8VNhX9uF5cAbNhzL6ygQLIUJBcM3aPXuQSnXWuNWH1mIA3L5QnW5tea/exec';
+const TEST_MODE = process.env.FLOTILLA_TEST_MODE === '1';
+const TEST_URL = String(process.env.FLOTILLA_TEST_APPS_SCRIPT_URL || '').trim();
+if (TEST_MODE && (!/^https:\/\/script\.google\.com\/macros\/s\/[^/]+\/exec$/.test(TEST_URL) || TEST_URL === PRODUCTION_APPS_SCRIPT_URL)) {
+  throw new Error('Pruebas: configurá FLOTILLA_TEST_APPS_SCRIPT_URL con el /exec de un Apps Script de prueba distinto del de producción.');
+}
+const APPS_SCRIPT_URL = TEST_MODE ? TEST_URL : PRODUCTION_APPS_SCRIPT_URL;
 
 app.post('/api', async (req, res) => {
   const started = Date.now();
@@ -75,6 +80,7 @@ app.listen(PORT, '127.0.0.1', () => {
   console.log('==========================================');
   console.log(' Base de Datos Flotilla · LOCAL DEV');
   console.log(` http://localhost:${PORT}`);
+  console.log(` Backend: ${TEST_MODE ? 'Apps Script de prueba' : 'Apps Script de producción'}`);
   console.log(' Netlify y Central: deshabilitados');
   console.log('==========================================');
   console.log('');

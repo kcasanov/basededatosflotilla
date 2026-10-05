@@ -139,16 +139,21 @@ async function savePaymentV3() {
   if (pending <= .01) return alert('Esta cuota ya está completamente pagada.');
   if (amount > pending + .01) return alert(`El máximo que falta de esta cuota es ${money(pending)}. Si existe dinero adicional, registralo en la siguiente semana correspondiente.`);
   $('savePaymentButton').disabled = true;
+  const realDate = isoDate(crTodayUTC());
+  const fundingWeek = paymentDistributionForMovement(row.date, realDate);
+  const fundingTuesday = fundingWeek.week ? parseDate(fundingWeek.week) : operationalTuesday();
+  const beforeCentral = centralFundingSnapshot(fundingTuesday);
   try {
     const after = st.received + amount;
     const res = await backend('markPayment', {
       sessionToken: sessionStorage.getItem(SESSION_KEY), planId: row.planId || row.key, vehicleId: row.vehicleId,
-      fechaProgramada: row.date, fechaReal: isoDate(crTodayUTC()), montoEsperado: row.amount, montoRecibido: amount,
+      fechaProgramada: row.date, fechaReal: realDate, montoEsperado: row.amount, montoRecibido: amount,
       estado: after >= row.amount - .01 ? 'PAGADO' : 'PARCIAL', nota: $('paymentNote').value.trim(), origen: 'MANUAL'
     });
     if (!res.ok) throw new Error(res.message || 'No se pudo registrar el abono');
     closePaymentV3(); await loadProductionData(); renderAll();
     window.refreshPlanInBackgroundV34?.();
+    await offerCentralFunding(beforeCentral, fundingTuesday);
   } catch (e) { alert(e.message || 'Error registrando el abono'); }
   finally { $('savePaymentButton').disabled = false; }
 }
@@ -371,10 +376,14 @@ async function saveUberWeekV3(vehicleId) {
     ajustesAnteriores:Number(fieldV3(form,'adjustments').value||0),efectivoChofer:Math.abs(Number(fieldV3(form,'cash').value||0)),ocrTexto:fieldV3(form,'ocrText').value||''
   };
   if(!confirm(`Guardar actualización Uber para ${fmtShort(date)}?`))return;
+  const uberFundingWeek=paymentDistributionForMovement(date,isoDate(crTodayUTC()));
+  const uberFundingTuesday=uberFundingWeek.week?parseDate(uberFundingWeek.week):operationalTuesday();
+  const beforeCentral=centralFundingSnapshot(uberFundingTuesday);
   try{
     const r=await backend('saveUberWeek',payload); if(!r.ok)throw new Error(r.message||'No se pudo guardar');
     await loadProductionData(); await loadPlanDashboardV3(true); renderAll();
     alert(`Semana guardada. Disponible Uber: ${money(r.rawAvailable)} · saldo arrastrado: ${money(r.carryIn||0)} · pendiente de esa cuota: ${money(r.targetPending)}${Number(r.unapplied||0)>0?' · sobrante no arrastrado: '+money(r.unapplied):''}.`);
+    await offerCentralFunding(beforeCentral,uberFundingTuesday);
   }catch(e){alert(e.message||'Error guardando Uber');}
 }
 
@@ -889,6 +898,20 @@ async function reverseMovement(id) {
     const r=await backend('unmarkPayment',{sessionToken:sessionStorage.getItem(SESSION_KEY),pagoId:id});
     if(!r.ok)throw new Error(r.message || 'No se pudo reversar');
     await loadProductionData(); await loadPlanDashboardV3(true); renderAll();
+    if(r.globalAdjustment?.ok===false){
+      const detail=(r.globalAdjustment.errors||[]).map(x=>x.cuentaId+': '+x.message).join('\n');
+      alert((r.warning||'El pago se reversó, pero quedó pendiente revisar el archivo global.')+(detail?'\n\n'+detail:''));
+    }else if(Number(r.globalAdjustment?.totalRemoved||0)>0){
+      const moved=Array.isArray(r.globalAdjustment?.moved)?r.globalAdjustment.moved:[];
+      if(moved.length){
+        const detail=moved.map(x=>
+          (x.cuentaId||x.centralAccountId)+': '+money(x.beforeBalance)+' → '+money(x.afterBalance)+' ('+(x.delta>=0?'+':'')+money(x.delta)+')'
+        ).join('\n');
+        alert('Pago reversado y archivo global restaurado.\n\n'+detail);
+      }else{
+        alert('Pago reversado. También se descontaron '+money(r.globalAdjustment.totalRemoved)+' de los aportes autorizados del archivo global.');
+      }
+    }
   }catch(e){alert(e.message);}
 }
 document.addEventListener('DOMContentLoaded',()=>{
