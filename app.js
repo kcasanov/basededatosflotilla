@@ -27,6 +27,8 @@ const paymentState = Object.create(null);
 const globalFundingStatusByWeek = Object.create(null);
 const globalFundingStatusRequests = Object.create(null);
 const GLOBAL_FUNDING_PENDING_KEY = 'flotilla_global_funding_pending_v1';
+let globalFundingPollTimer = null;
+let globalFundingModalResolver = null;
 
 function crTodayUTC() {
   const parts = new Intl.DateTimeFormat('en-CA', {
@@ -413,6 +415,51 @@ function localGlobalFundingPending(cuentaId, tuesday = weekDate()) {
   return readLocalGlobalFundingPending()[isoDate(tuesday)]?.[cuentaId] || null;
 }
 
+function hasGlobalFundingPending(tuesday = weekDate()) {
+  const week = isoDate(tuesday);
+  const local = readLocalGlobalFundingPending()[week] || {};
+  const remote = globalFundingStatusByWeek[week]?.items || [];
+  return Object.keys(local).length > 0 || remote.some(x => x.pending);
+}
+function stopGlobalFundingPoller() {
+  if (globalFundingPollTimer) clearInterval(globalFundingPollTimer);
+  globalFundingPollTimer = null;
+}
+function ensureGlobalFundingPoller() {
+  if (!hasGlobalFundingPending()) {
+    stopGlobalFundingPoller();
+    return;
+  }
+  if (globalFundingPollTimer) return;
+  globalFundingPollTimer = setInterval(async () => {
+    if (!hasGlobalFundingPending()) return stopGlobalFundingPoller();
+    await refreshGlobalFundingStatus(weekDate(), true);
+    renderWeek();
+    if (!hasGlobalFundingPending()) stopGlobalFundingPoller();
+  }, 5000);
+}
+function askGlobalFunding(account) {
+  const modal = $('globalFundingModal');
+  if (!modal) return Promise.resolve(confirm(`Se cubrió ${account.name} (${money(account.amount)}). ¿Deseás sumar este monto a su cuenta en el archivo global de Drive?`));
+  if (globalFundingModalResolver) {
+    globalFundingModalResolver(false);
+    globalFundingModalResolver = null;
+  }
+  $('globalFundingModalTitle').textContent = `Aporte pendiente · ${account.name}`;
+  $('globalFundingModalText').textContent = `Se cubrió ${account.name} por ${money(account.amount)}. ¿Deseás aplicar este monto al archivo global de Drive?`;
+  modal.classList.add('show');
+  return new Promise(resolve => {
+    globalFundingModalResolver = resolve;
+    const finish = value => {
+      modal.classList.remove('show');
+      globalFundingModalResolver = null;
+      resolve(value);
+    };
+    $('globalFundingApplyButton').onclick = () => finish(true);
+    $('globalFundingLaterButton').onclick = () => finish(false);
+  });
+}
+
 function pendingGlobalFundingItem(cuentaId, tuesday = weekDate()) {
   const status = globalFundingStatusByWeek[isoDate(tuesday)];
   const backendPending = status?.items?.find(x => x.cuentaId === cuentaId && x.pending) || null;
@@ -448,8 +495,11 @@ async function refreshGlobalFundingStatus(tuesday = weekDate(), force = false) {
 }
 async function applyGlobalFundingAccount(cuentaId, account, tuesday = weekDate(), ask = true) {
   rememberGlobalFundingPending(cuentaId, tuesday, account);
-  if (ask && !confirm(`Se cubrió ${account.name} (${money(account.amount)}). ¿Deseás sumar este monto a su cuenta en el archivo global de Drive?`)) {
+  ensureGlobalFundingPoller();
+  if (ask && !await askGlobalFunding(account)) {
     await refreshGlobalFundingStatus(tuesday, true);
+    ensureGlobalFundingPoller();
+    renderWeek();
     return false;
   }
   try {
@@ -477,10 +527,14 @@ async function applyGlobalFundingAccount(cuentaId, account, tuesday = weekDate()
       clearGlobalFundingPending(cuentaId, tuesday);
     }
     await refreshGlobalFundingStatus(tuesday, true);
+    if (hasGlobalFundingPending(tuesday)) ensureGlobalFundingPoller(); else stopGlobalFundingPoller();
+    renderWeek();
     return moved.length > 0;
   } catch (error) {
     alert(error.message || 'No se pudo actualizar el archivo global.');
     await refreshGlobalFundingStatus(tuesday, true);
+    ensureGlobalFundingPoller();
+    renderWeek();
     return false;
   }
 }
@@ -535,7 +589,18 @@ function renderExpenseAllocation(expenses, available) {
   }).join('');
 }
 window.addEventListener?.('storage', event => {
-  if (event.key === GLOBAL_FUNDING_PENDING_KEY) renderWeek();
+  if (event.key === GLOBAL_FUNDING_PENDING_KEY) {
+    renderWeek();
+    ensureGlobalFundingPoller();
+  }
+});
+document.addEventListener?.('visibilitychange', () => {
+  if (!document.hidden && hasGlobalFundingPending()) {
+    void refreshGlobalFundingStatus(weekDate(), true).then(() => {
+      renderWeek();
+      ensureGlobalFundingPoller();
+    });
+  }
 });
 
 function renderExpenseConfig() {
@@ -585,7 +650,9 @@ function renderWeek() {
   const expenses = allocateExpenses(currentExpenses(rows, d), cash.operational, cash.debtRecovery);
   renderExpenseAllocation(expenses, received);
   renderSummary();
-  void refreshGlobalFundingStatus(d);
+  void refreshGlobalFundingStatus(d).then(() => {
+    if (hasGlobalFundingPending(d)) ensureGlobalFundingPoller();
+  });
 }
 async function markWeekRowPaid(encodedKey) {
   const key = decodeURIComponent(encodedKey);
