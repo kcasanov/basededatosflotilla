@@ -253,7 +253,7 @@ function morningEventsBetween(v, start, end) {
   while (cursor <= end) {
     const y = cursor.getUTCFullYear(), m = cursor.getUTCMonth();
     const last = monthEndDay(y, m);
-    [15, Math.min(30, last)].forEach(day => {
+    [15, last].forEach(day => {
       const d = new Date(Date.UTC(y, m, day));
       if (d >= start && d <= end && (!hardStart || d >= hardStart) && (!hardEnd || d <= hardEnd)) {
         out.push({
