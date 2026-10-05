@@ -991,7 +991,32 @@ async function submitLogin() {
   finally { $('loginButton').disabled = false; }
 }
 
+function bindAuthUI() {
+  const button = $('loginButton');
+  if (button && !button.dataset.authBound) {
+    button.dataset.authBound = '1';
+    button.addEventListener('click', () => submitLogin());
+  }
+  const requestButton = $('requestTokenButton');
+  if (requestButton && !requestButton.dataset.authBound) {
+    requestButton.dataset.authBound = '1';
+    requestButton.addEventListener('click', () => requestSecurityToken());
+  }
+  const pin = $('loginPin');
+  if (pin && !pin.dataset.authBound) {
+    pin.dataset.authBound = '1';
+    pin.addEventListener('keydown', e => { if (e.key === 'Enter') submitLogin(); });
+  }
+  const token = $('loginToken');
+  if (token && !token.dataset.authBound) {
+    token.dataset.authBound = '1';
+    token.addEventListener('keydown', e => { if (e.key === 'Enter') submitLogin(); });
+  }
+}
+
 function init() {
+  // Auth first: even if another optional UI initializer fails, login stays usable.
+  bindAuthUI();
   document.querySelectorAll('.navbtn').forEach(b => b.addEventListener('click', () => goToView(b.dataset.v)));
   $('prevWeek').onclick = () => { weekOffset--; renderWeek(); renderVehicles(); };
   $('nextWeek').onclick = () => { weekOffset++; renderWeek(); renderVehicles(); };
@@ -1010,10 +1035,6 @@ function init() {
   $('themeToggle').onclick = () => applyTheme(document.body.classList.contains('dark') ? 'light' : 'dark');
   applyTheme(localStorage.getItem('flotilla_theme') || 'light');
 
-  $('loginButton').addEventListener('click', submitLogin); $('requestTokenButton').addEventListener('click', requestSecurityToken);
-  $('loginPin').addEventListener('keydown', e => { if (e.key === 'Enter') submitLogin(); });
-  $('loginToken').addEventListener('keydown', e => { if (e.key === 'Enter') submitLogin(); });
-
   $('firma').value = isoDate(crTodayUTC()); recalcQuote();
   validateExistingSession();
 }
@@ -1024,4 +1045,12 @@ window.openLatePayment = openLatePayment;
 window.openVehicle = openVehicle;
 window.goToView = goToView;
 
-document.addEventListener('DOMContentLoaded', init);
+document.addEventListener('DOMContentLoaded', () => {
+  bindAuthUI();
+  try {
+    init();
+  } catch (error) {
+    console.error('UI init error', error);
+    authMsg('La interfaz cargó parcialmente. Podés intentar iniciar sesión mientras se revisa la inicialización.');
+  }
+});
