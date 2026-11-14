@@ -29,6 +29,8 @@ function doPost(e) {
       case 'createVehicle': result = protected_(body, createVehicle_); break;
       case 'updateVehicleConfig': result = protected_(body, updateVehicleConfig_); break;
       case 'updateAccount': result = protected_(body, updateAccount_); break;
+      case 'createAccount': result = protected_(body, createAccount_); break;
+      case 'deleteAccount': result = protected_(body, deleteAccount_); break;
       case 'getPlanDashboard': result = protected_(body, getPlanDashboard_); break;
       case 'saveUberWeek': result = protected_(body, saveUberWeek_); break;
       case 'syncCentral': result = {ok:true,disabled:true,message:'Sincronización pausada.'}; break;
@@ -144,7 +146,7 @@ function protected_(body,handler){
   const key=SESSION_PREFIX+hash_(session),raw=props_().getProperty(key); if(!raw)return{ok:false,authRequired:true,message:'Sesión no válida.'};
   try{const data=JSON.parse(raw);if(data.device!==device)return{ok:false,authRequired:true,message:'La sesión pertenece a otro dispositivo.'};data.lastSeen=Date.now();props_().setProperty(key,JSON.stringify(data));}
   catch(e){props_().deleteProperty(key);return{ok:false,authRequired:true,message:'Sesión no válida.'};}
-  if (['markPayment','unmarkPayment','saveUberWeek'].includes(String(body.action))) {
+  if (['markPayment','unmarkPayment','saveUberWeek','updateAccount','createAccount','deleteAccount'].includes(String(body.action))) {
     const lock=LockService.getScriptLock();
     if(!lock.tryLock(10000))return {ok:false,message:'Otro movimiento está en curso. Reintentá.'};
     try{return handler(body,device);}finally{lock.releaseLock();}
@@ -216,7 +218,7 @@ function createVehicle_(body,device){
   const existing=vehicles.getDataRange().getValues();
   for(let r=1;r<existing.length;r++)if(String(existing[r][2]).trim().toUpperCase()===normalizedPlate)return{ok:false,message:'Ya existe un vehículo con esa placa.'};
   const vehicleId='veh_'+normalizedPlate.replace(/[^A-Z0-9]/g,'_')+'_'+Date.now(),firstDate=plan[0].fecha||'',lastDate=plan[plan.length-1].fecha||'',displayName=String(v.marca)+' '+String(v.modelo);
-  vehicles.appendRow([vehicleId,displayName,normalizedPlate,v.marca||'',v.modelo||'',num_(v.anio),num_(c.cuota),firstDate,lastDate,0,num_(projection.semanas||plan.length),'ACTIVO','SEMANAL','Creado desde la aplicación',now,now,'','PERSONAL','','ACTIVO',false,'']);
+  vehicles.appendRow([vehicleId,displayName,normalizedPlate,v.marca||'',v.modelo||'',num_(v.anio),num_(c.cuota),firstDate,lastDate,0,num_(projection.semanas||plan.length),'ACTIVO','SEMANAL','Creado desde la aplicación',now,now,'','PERSONAL','','ACTIVO',false,'','PERSONAL']);
   const rows=plan.map((p,idx)=>([vehicleId+'-'+String(idx+1).padStart(4,'0'),vehicleId,num_(p.semana||idx+1),p.fecha||'',num_(p.saldoInicial),num_(p.cuotaTotal),num_(p.seguro),num_(p.iva),num_(p.cuotaUtil),num_(p.interes),num_(p.capital),num_(p.saldoFinal),0,0,p.estado||'Pendiente']));
   if(rows.length)plans.getRange(plans.getLastRow()+1,1,rows.length,rows[0].length).setValues(rows);
   log_('VEHICULO',vehicleId,'CREATE',JSON.stringify({placa:normalizedPlate,marca:v.marca,modelo:v.modelo,semanas:rows.length}),device);
@@ -455,7 +457,43 @@ function updateAccount_(body,device){
   sh.getRange(row,idx.Orden+1).setValue(order);
   sh.getRange(row,idx.VigenteDesde+1).setValue(from);
   sh.getRange(row,idx.VigenteHasta+1).setValue(to);
-  log_('CUENTA',accountId,'UPDATE_ACCOUNT',JSON.stringify({name:name,type:type,amount:type==='SEMANAL'?amount:0,priority:priority,order:order,from:from,to:to}),device);
+  if(idx.Entidad!==undefined&&body.entidad!==undefined)sh.getRange(row,idx.Entidad+1).setValue(String(body.entidad||'PERSONAL').toUpperCase());
+  if(idx.Periodicidad!==undefined&&body.periodicidad!==undefined)sh.getRange(row,idx.Periodicidad+1).setValue(String(body.periodicidad||'SEMANAL').toUpperCase());
+  if(idx.Activa!==undefined)sh.getRange(row,idx.Activa+1).setValue(true);
+  log_('CUENTA',accountId,'UPDATE_ACCOUNT',JSON.stringify({name:name,type:type,amount:type==='SEMANAL'?amount:0,priority:priority,order:order,from:from,to:to,entity:body.entidad||'',periodicity:body.periodicidad||''}),device);
+  return{ok:true};
+}
+
+function createAccount_(body,device){
+  const ss=SpreadsheetApp.openById(mainSpreadsheetId_()),sh=ss.getSheetByName('Cuentas');
+  const headers=sh.getRange(1,1,1,sh.getLastColumn()).getValues()[0].map(String);
+  const name=String(body.nombre||'').trim();if(!name)return{ok:false,message:'Nombre requerido.'};
+  const entity=String(body.entidad||'NEGOCIO').toUpperCase();
+  if(entity!=='NEGOCIO')return{ok:false,message:'La creación desde esta vista solo está habilitada para Negocio.'};
+  const type=String(body.tipo||'SEMANAL').toUpperCase(),priority=String(body.prioridad||'BAJA').toUpperCase();
+  if(['SEMANAL','AUTOMATICO_PLAN','REMANENTE'].indexOf(type)<0)return{ok:false,message:'Tipo de cuenta inválido.'};
+  if(['CRITICA','MEDIA','BAJA'].indexOf(priority)<0)return{ok:false,message:'Prioridad inválida.'};
+  const periodicity=String(body.periodicidad||'SEMANAL').toUpperCase();
+  const base=String(body.accountId||name).toLowerCase().replace(/[^a-z0-9]+/g,'_').replace(/^_+|_+$/g,'').slice(0,30)||'cuenta';
+  const accountId=(base.indexOf('soc_')===0?base:'soc_'+base)+'_'+Date.now();
+  const current=sheetObjects_(sh);if(current.some(r=>String(r.CuentaID)===accountId))return{ok:false,message:'La cuenta ya existe.'};
+  const data={CuentaID:accountId,Nombre:name,Tipo:type,Monto:type==='SEMANAL'?Math.max(0,num_(body.monto)):0,Prioridad:priority,Orden:Math.max(1,Math.round(num_(body.orden)||99)),VigenteDesde:String(body.vigenteDesde||Utilities.formatDate(new Date(),TZ,'yyyy-MM-dd')),VigenteHasta:String(body.vigenteHasta||''),Activa:true,Entidad:'NEGOCIO',Periodicidad:periodicity};
+  sh.appendRow(headers.map(h=>Object.prototype.hasOwnProperty.call(data,h)?data[h]:''));
+  log_('CUENTA',accountId,'CREATE_ACCOUNT',JSON.stringify(data),device);
+  return{ok:true,accountId:accountId};
+}
+
+function deleteAccount_(body,device){
+  const accountId=String(body.accountId||'').trim();if(!accountId)return{ok:false,message:'Cuenta requerida.'};
+  const ss=SpreadsheetApp.openById(mainSpreadsheetId_()),sh=ss.getSheetByName('Cuentas');
+  const values=sh.getDataRange().getValues(),headers=values[0].map(String),idx={};headers.forEach((h,i)=>idx[h]=i);
+  let row=-1;for(let r=1;r<values.length;r++)if(String(values[r][idx.CuentaID])===accountId){row=r+1;break;}
+  if(row<0)return{ok:false,message:'Cuenta no encontrada.'};
+  const entity=idx.Entidad!==undefined?String(sh.getRange(row,idx.Entidad+1).getValue()||'PERSONAL').toUpperCase():'PERSONAL';
+  if(entity!=='NEGOCIO')return{ok:false,message:'Solo se pueden quitar cuentas de Negocio desde esta vista.'};
+  if(idx.Activa===undefined)return{ok:false,message:'La columna Activa no existe.'};
+  sh.getRange(row,idx.Activa+1).setValue(false);
+  log_('CUENTA',accountId,'DISABLE_ACCOUNT','Cuenta de Negocio desactivada',device);
   return{ok:true};
 }
 

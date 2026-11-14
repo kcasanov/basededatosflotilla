@@ -54,7 +54,7 @@ getLateRows = function () {
   const cutoff = weekDate();
   planDashboardV3.forEach(card => {
     const v = contractVehicles.find(x => x.id === card.vehicleId);
-    if (!v || !Array.isArray(card.legacyPending)) return;
+    if (!v || v.entity === 'NEGOCIO' || !Array.isArray(card.legacyPending)) return;
     card.legacyPending.forEach(p => {
       const date = normalizeSheetDate(p.date);
       if (!date || parseDate(date) >= cutoff) return;
@@ -75,6 +75,7 @@ getLateRows = function () {
 // Finalizado/cancelado deja de generar obligaciones nuevas, pero conserva historial.
 allScheduledEventsBetween = function(start, end) {
   return contractVehicles
+    .filter(v => v.entity !== 'NEGOCIO')
     .filter(v => !['FINALIZADO','CANCELADO'].includes(v.operationStatus || 'ACTIVO'))
     .flatMap(v => scheduledEventsForVehicle(v, start, end))
     .sort((a,b) => a.date.localeCompare(b.date));
@@ -196,7 +197,7 @@ async function loadPlanDashboardV3(force = false) {
 function dashboardCardV3(vehicleId) { return planDashboardV3.find(c => c.vehicleId === vehicleId) || null; }
 function renderUberV3() {
   const box = $('uberCards'); if (!box) return;
-  const vehicles = contractVehicles.filter(v => !['FINALIZADO','CANCELADO'].includes(v.operationStatus || 'ACTIVO'));
+  const vehicles = contractVehicles.filter(v => v.entity !== 'NEGOCIO' && !['FINALIZADO','CANCELADO'].includes(v.operationStatus || 'ACTIVO'));
   if (!vehicles.length) { box.innerHTML = '<div class="placeholder">No hay vehículos activos.</div>'; return; }
   box.innerHTML = vehicles.map(v => {
     const open = openPaymentRowsV3(v.id), pending = open.filter(r => duePendingWeekV3(r)), pendingAmt = pending.reduce((s,r)=>s+paymentStatusV3(r).pending,0), dash = dashboardCardV3(v.id);
@@ -638,6 +639,7 @@ window.saveExpenseConfigV31 = saveExpenseConfigV31;
       v.operationStatus = String(raw.OperacionEstado || 'ACTIVO').toUpperCase();
       v.planIntegrationActive = raw.PlanIntegracionActiva === true || String(raw.PlanIntegracionActiva).toUpperCase() === 'TRUE';
       v.configNote = String(raw.ConfigNota || '');
+      v.entity = String(raw.Entidad || v.entity || 'PERSONAL').toUpperCase();
     });
 
     // Varios movimientos pueden pertenecer a una misma cuota.

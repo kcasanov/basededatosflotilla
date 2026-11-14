@@ -21,6 +21,7 @@ let weekOffset = 0;
 let pendingLatePayment = null;
 
 let expenseConfig = [];
+let businessExpenseConfig = [];
 let contractVehicles = [];
 let planPayments = [];
 const paymentState = Object.create(null);
@@ -107,7 +108,11 @@ function cashAllocationForWeek(tuesday = weekDate()) {
   const targetWeek = isoDate(tuesday);
   let operational = 0, debtRecovery = 0;
   Object.entries(paymentState).forEach(([key, state]) => {
-    const scheduledDate = key.split('|')[1] || '';
+    const parts = key.split('|');
+    const vehicleId = parts[0] || '';
+    const scheduledDate = parts[1] || '';
+    const vehicle = contractVehicles.find(v => v.id === vehicleId);
+    if (vehicle && vehicle.entity === 'NEGOCIO') return;
     const movements = state.movements?.length ? state.movements : [{date:state.realDate,amount:state.received}];
     movements.forEach(movement => {
       const allocation = paymentDistributionForMovement(scheduledDate, movement.date);
@@ -188,26 +193,33 @@ async function loadProductionData() {
     frequency: String(v.Frecuencia || 'SEMANAL').toUpperCase(),
     note: String(v.Nota || ''),
     createdAt: normalizeSheetDate(v.CreatedAt),
-    updatedAt: normalizeSheetDate(v.UpdatedAt)
+    updatedAt: normalizeSheetDate(v.UpdatedAt),
+    entity: String(v.Entidad || 'PERSONAL').toUpperCase()
   })).filter(v => v.id) : [];
 
-  expenseConfig = Array.isArray(r.accounts) ? r.accounts
+  const mappedAccounts = Array.isArray(r.accounts) ? r.accounts
     .filter(a => String(a.Activa).toUpperCase() !== 'FALSE')
     .map(a => {
       const type = mapAccountType(a.Tipo);
       const amount = Number(a.Monto || 0);
+      const entity = String(a.Entidad || 'PERSONAL').toUpperCase();
+      const periodicity = String(a.Periodicidad || (type === 'automatic' ? 'AUTOMATICO' : type === 'remainder' ? 'REMANENTE' : 'SEMANAL')).toUpperCase();
       return {
         id: String(a.CuentaID || ''),
         order: Number(a.Orden || 99),
         name: String(a.Nombre || a.CuentaID || ''),
         type,
         amount,
-        rule: type === 'automatic' ? 'Según pagos programados' : type === 'remainder' ? 'Todo el remanente' : money(amount) + ' semanal',
+        rule: type === 'automatic' ? 'Según pagos programados' : type === 'remainder' ? 'Todo el remanente' : periodicity === 'MENSUAL' ? money(amount) + ' mensual' : money(amount) + ' semanal',
         priority: mapPriority(a.Prioridad),
         from: normalizeSheetDate(a.VigenteDesde) || null,
-        to: normalizeSheetDate(a.VigenteHasta) || null
+        to: normalizeSheetDate(a.VigenteHasta) || null,
+        entity,
+        periodicity
       };
     }) : [];
+  expenseConfig = mappedAccounts.filter(a => a.entity !== 'NEGOCIO');
+  businessExpenseConfig = mappedAccounts.filter(a => a.entity === 'NEGOCIO');
 
   planPayments = Array.isArray(r.plans) ? r.plans.map(p => ({
     planId: String(p.PlanID || ''),
@@ -299,7 +311,10 @@ function scheduledEventsForVehicle(v, start, end) {
   return derivedWeeklyEventsBetween(v, start, end);
 }
 function allScheduledEventsBetween(start, end) {
-  return contractVehicles.flatMap(v => scheduledEventsForVehicle(v, start, end)).sort((a, b) => a.date.localeCompare(b.date));
+  return contractVehicles
+    .filter(v => v.entity !== 'NEGOCIO')
+    .flatMap(v => scheduledEventsForVehicle(v, start, end))
+    .sort((a, b) => a.date.localeCompare(b.date));
 }
 function rowsForTuesday(tuesday) {
   const start = new Date(tuesday); start.setUTCDate(start.getUTCDate() - 1);
@@ -323,7 +338,7 @@ function rowsForTuesday(tuesday) {
 }
 function rowsForCurrentWeek() { return rowsForTuesday(weekDate()); }
 function trackingStartDate() {
-  const created = contractVehicles.map(v => v.createdAt).filter(Boolean).sort()[0];
+  const created = contractVehicles.filter(v => v.entity !== 'NEGOCIO').map(v => v.createdAt).filter(Boolean).sort()[0];
   if (created) return nextOrSameTuesday(parseDate(created));
   return nextOrSameTuesday(crTodayUTC());
 }
@@ -745,7 +760,8 @@ function vehicleStats(v) {
   };
 }
 function renderVehicles() {
-  $('vehiclesBody').innerHTML = contractVehicles.length ? contractVehicles.map(v => {
+  const personalVehicles = contractVehicles.filter(v => v.entity !== 'NEGOCIO');
+  $('vehiclesBody').innerHTML = personalVehicles.length ? personalVehicles.map(v => {
     const st = vehicleStats(v), lateRows = vehicleLateRows(v), lateAmt = lateRows.reduce((s, x) => s + x.missing, 0);
     return `<tr>
       <td>${v.name}</td><td>${money(v.weekly)}</td><td>${st.currentCount}</td><td>${st.totalWeeks}</td><td>${st.remaining}</td>
