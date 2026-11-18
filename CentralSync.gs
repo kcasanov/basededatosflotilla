@@ -337,10 +337,18 @@ function centralSummarizeResult_(result) {
 
 function centralBuildWeekModel_(weekDate) {
   var ss = SpreadsheetApp.openById(mainSpreadsheetId_());
+  // El archivo global pertenece al flujo PERSONAL. Los vehículos de Negocio
+  // se administran y distribuyen por separado y nunca deben fondear cuentas personales.
   var vehicles = sheetObjects_(ss.getSheetByName('Vehiculos')).filter(function(v) {
     var op = String(v.OperacionEstado || 'ACTIVO').toUpperCase();
-    return op !== 'FINALIZADO' && op !== 'CANCELADO' && String(v.Estado || 'ACTIVO').toUpperCase() !== 'INACTIVO';
+    var entity = String(v.Entidad || 'PERSONAL').toUpperCase();
+    return entity !== 'NEGOCIO' &&
+      op !== 'FINALIZADO' &&
+      op !== 'CANCELADO' &&
+      String(v.Estado || 'ACTIVO').toUpperCase() !== 'INACTIVO';
   });
+  var personalVehicleIds = {};
+  vehicles.forEach(function(v) { personalVehicleIds[String(v.VehicleID || '')] = true; });
   var plans = sheetObjects_(ss.getSheetByName('Plan_Pagos'));
   var weekStart = new Date(weekDate + 'T00:00:00Z');
   weekStart.setUTCDate(weekStart.getUTCDate() - 1);
@@ -401,14 +409,21 @@ function centralBuildWeekModel_(weekDate) {
   });
 
   rows.forEach(function(r) { r.received = sumReceived_(ss, r.vehicleId, r.date); });
-  var cash = centralCashAllocationForWeek_(sheetObjects_(ss.getSheetByName('Pagos_Reales')), weekDate);
+  var personalPayments = sheetObjects_(ss.getSheetByName('Pagos_Reales')).filter(function(p) {
+    return !!personalVehicleIds[String(p.VehicleID || '')];
+  });
+  var cash = centralCashAllocationForWeek_(personalPayments, weekDate);
   var available = cash.operational;
   var automaticIVA = rows.reduce(function(sum,r) { return sum + num_(r.iva); }, 0);
   var automaticInsurance = rows.reduce(function(sum,r) { return sum + num_(r.insurance); }, 0);
 
   var accounts = sheetObjects_(ss.getSheetByName('Cuentas')).filter(function(a) {
     var from = ymd_(a.VigenteDesde), to = ymd_(a.VigenteHasta);
-    return (!from || weekDate >= from) && (!to || weekDate <= to) && String(a.Activa || '').toUpperCase() !== 'FALSE';
+    var entity = String(a.Entidad || 'PERSONAL').toUpperCase();
+    return entity !== 'NEGOCIO' &&
+      (!from || weekDate >= from) &&
+      (!to || weekDate <= to) &&
+      String(a.Activa || '').toUpperCase() !== 'FALSE';
   }).map(function(a) {
     var id = String(a.CuentaID || '');
     var type = String(a.Tipo || 'SEMANAL').toUpperCase();
