@@ -39,7 +39,8 @@ function openPaymentRowsV3(vehicleId) {
   return [...map.values()].sort((a, b) => a.date.localeCompare(b.date));
 }
 function paymentStatusV3(row) {
-  const pending = row.historicalApplied ? 0 : Math.max(0, Number(row.amount || 0) - Number(row.received || 0));
+  const exactPending = row.historicalApplied ? 0 : Math.max(0, Number(row.amount || 0) - Number(row.received || 0));
+  const pending = exactPending <= .5 ? 0 : exactPending; // Uber: diferencia menor a medio colón.
   return { pending, paid: pending <= .01, partial: Number(row.received || 0) > 0 && pending > .01 };
 }
 function duePendingWeekV3(row, today = isoDate(crTodayUTC())) {
@@ -54,7 +55,7 @@ getLateRows = function () {
   const cutoff = weekDate();
   planDashboardV3.forEach(card => {
     const v = contractVehicles.find(x => x.id === card.vehicleId);
-    if (!v || v.entity === 'NEGOCIO' || !Array.isArray(card.legacyPending)) return;
+    if (!v || v.entity !== 'PERSONAL' || !Array.isArray(card.legacyPending)) return;
     card.legacyPending.forEach(p => {
       const date = normalizeSheetDate(p.date);
       if (!date || parseDate(date) >= cutoff) return;
@@ -75,7 +76,7 @@ getLateRows = function () {
 // Finalizado/cancelado deja de generar obligaciones nuevas, pero conserva historial.
 allScheduledEventsBetween = function(start, end) {
   return contractVehicles
-    .filter(v => v.entity !== 'NEGOCIO')
+    .filter(v => v.entity === 'PERSONAL')
     .filter(v => !['FINALIZADO','CANCELADO'].includes(v.operationStatus || 'ACTIVO'))
     .flatMap(v => scheduledEventsForVehicle(v, start, end))
     .sort((a,b) => a.date.localeCompare(b.date));
@@ -121,7 +122,7 @@ function openPaymentV3(encodedKey) {
   $('savePaymentButton').disabled = s.paid;
   $('paymentModalTitle').textContent = row.vehicle;
   $('paymentModalInfo').innerHTML = `<b>Cuota:</b> ${money(row.amount)} · <b>Recibido:</b> ${money(row.received)} · <b>Pendiente:</b> ${money(s.pending)}<br><span class="miniNote">Semana ${fmtShort(row.date)}</span>`;
-  $('paymentAmount').value = Math.round(s.pending || 0);
+  $('paymentAmount').value = s.pending > .5 ? Math.ceil(s.pending) : 0;
   $('paymentNote').value = '';
   $('paymentHistory').innerHTML = paymentHistoryHtmlV3(row.key);
   $('paymentModal').classList.add('show');
@@ -136,14 +137,16 @@ function closePaymentV3() { $('paymentModal').classList.remove('show'); selected
 async function savePaymentV3() {
   if (!selectedPaymentV3) return;
   const row = selectedPaymentV3, amount = Number($('paymentAmount').value || 0), st = getPaymentState(row.vehicleId, row.date), pending = Math.max(0, row.amount - st.received);
+  const paymentIsPersonal = (contractVehicles.find(v => v.id === row.vehicleId)?.entity || 'PERSONAL') === 'PERSONAL';
   if (!(amount > 0)) return alert('Ingresá un monto mayor a ₡0.');
-  if (pending <= .01) return alert('Esta cuota ya está completamente pagada.');
-  if (amount > pending + .01) return alert(`El máximo que falta de esta cuota es ${money(pending)}. Si existe dinero adicional, registralo en la siguiente semana correspondiente.`);
+  if (pending <= .5) return alert('Esta cuota ya está completamente pagada (redondeada al colón).');
+  // Permitir redondear hacia arriba a colones. El backend aplica solo el saldo real.
+  if (amount > Math.ceil(pending) + .01) return alert(`El máximo que falta de esta cuota es ${money(Math.ceil(pending))}. Si existe dinero adicional, registralo en la siguiente semana correspondiente.`);
   $('savePaymentButton').disabled = true;
   const realDate = isoDate(crTodayUTC());
   const fundingWeek = paymentDistributionForMovement(row.date, realDate);
   const fundingTuesday = fundingWeek.week ? parseDate(fundingWeek.week) : operationalTuesday();
-  const beforeCentral = centralFundingSnapshot(fundingTuesday);
+  const beforeCentral = paymentIsPersonal ? centralFundingSnapshot(fundingTuesday) : null;
   try {
     const after = st.received + amount;
     const res = await backend('markPayment', {
@@ -154,7 +157,7 @@ async function savePaymentV3() {
     if (!res.ok) throw new Error(res.message || 'No se pudo registrar el abono');
     closePaymentV3(); await loadProductionData(); renderAll();
     window.refreshPlanInBackgroundV34?.();
-    await offerCentralFunding(beforeCentral, fundingTuesday);
+    if (paymentIsPersonal) await offerCentralFunding(beforeCentral, fundingTuesday);
   } catch (e) { alert(e.message || 'Error registrando el abono'); }
   finally { $('savePaymentButton').disabled = false; }
 }
@@ -197,7 +200,7 @@ async function loadPlanDashboardV3(force = false) {
 function dashboardCardV3(vehicleId) { return planDashboardV3.find(c => c.vehicleId === vehicleId) || null; }
 function renderUberV3() {
   const box = $('uberCards'); if (!box) return;
-  const vehicles = contractVehicles.filter(v => v.entity !== 'NEGOCIO' && !['FINALIZADO','CANCELADO'].includes(v.operationStatus || 'ACTIVO'));
+  const vehicles = contractVehicles.filter(v => v.entity === 'PERSONAL' && !['FINALIZADO','CANCELADO'].includes(v.operationStatus || 'ACTIVO'));
   if (!vehicles.length) { box.innerHTML = '<div class="placeholder">No hay vehículos activos.</div>'; return; }
   box.innerHTML = vehicles.map(v => {
     const open = openPaymentRowsV3(v.id), pending = open.filter(r => duePendingWeekV3(r)), pendingAmt = pending.reduce((s,r)=>s+paymentStatusV3(r).pending,0), dash = dashboardCardV3(v.id);
@@ -877,6 +880,7 @@ window.saveExpenseConfigV31 = saveExpenseConfigV31;
 let movementHistoryLimit = 10;
 function movementHistoryRows() {
   return [...Object.entries(paymentState).flatMap(([key,st])=>(st.movements || []).map((m,index)=>({...m,key,index}))),...reversedMovements]
+    .filter(m => contractVehicles.some(v => v.id === String(m.key || '').split('|')[0] && v.entity === 'PERSONAL'))
     .sort((a,b)=>String(b.createdAt || b.date).localeCompare(String(a.createdAt || a.date)) || b.index-a.index);
 }
 function renderMovementHistory() {
