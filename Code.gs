@@ -497,10 +497,10 @@ function deleteAccount_(body,device){
   let row=-1;for(let r=1;r<values.length;r++)if(String(values[r][idx.CuentaID])===accountId){row=r+1;break;}
   if(row<0)return{ok:false,message:'Cuenta no encontrada.'};
   const entity=idx.Entidad!==undefined?String(sh.getRange(row,idx.Entidad+1).getValue()||'PERSONAL').toUpperCase():'PERSONAL';
-  if(!['NEGOCIO','CATA'].includes(entity))return{ok:false,message:'Solo se pueden quitar cuentas de Negocio o Cata desde esta vista.'};
+  if(!['PERSONAL','NEGOCIO','CATA'].includes(entity))return{ok:false,message:'Entidad inválida.'};
   if(idx.Activa===undefined)return{ok:false,message:'La columna Activa no existe.'};
   sh.getRange(row,idx.Activa+1).setValue(false);
-  log_('CUENTA',accountId,'DISABLE_ACCOUNT','Cuenta de Negocio desactivada',device);
+  log_('CUENTA',accountId,'DISABLE_ACCOUNT','Cuenta desactivada; historial conservado',device);
   return{ok:true};
 }
 
