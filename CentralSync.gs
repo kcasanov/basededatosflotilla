@@ -342,7 +342,7 @@ function centralBuildWeekModel_(weekDate) {
   var vehicles = sheetObjects_(ss.getSheetByName('Vehiculos')).filter(function(v) {
     var op = String(v.OperacionEstado || 'ACTIVO').toUpperCase();
     var entity = String(v.Entidad || 'PERSONAL').toUpperCase();
-    return entity !== 'NEGOCIO' &&
+    return entity === 'PERSONAL' &&
       op !== 'FINALIZADO' &&
       op !== 'CANCELADO' &&
       String(v.Estado || 'ACTIVO').toUpperCase() !== 'INACTIVO';
@@ -420,7 +420,7 @@ function centralBuildWeekModel_(weekDate) {
   var accounts = sheetObjects_(ss.getSheetByName('Cuentas')).filter(function(a) {
     var from = ymd_(a.VigenteDesde), to = ymd_(a.VigenteHasta);
     var entity = String(a.Entidad || 'PERSONAL').toUpperCase();
-    return entity !== 'NEGOCIO' &&
+    return entity === 'PERSONAL' &&
       (!from || weekDate >= from) &&
       (!to || weekDate <= to) &&
       String(a.Activa || '').toUpperCase() !== 'FALSE';
