@@ -101,6 +101,7 @@ function bizAllocate(rows,available,debtRecovery) {
   return rows;
 }
 function bizStatusHtml(r) {
+  if(r.historicalApplied) return '<span class="statuspill ok">Aplicado en plan</span>';
   const pending=Math.max(0,Number(r.amount||0)-Number(r.received||0));
   if (pending<=.5) return '<span class="statuspill ok">Pagado</span>';
   if (Number(r.received||0)>0) return '<span class="statuspill partial">Parcial</span>';
@@ -109,6 +110,7 @@ function bizStatusHtml(r) {
 function openBusinessPaymentV4(encodedKey) {
   const key=decodeURIComponent(encodedKey), row=bizRowsForTuesday(bizTuesday()).concat(bizLateRows()).find(function(r){return r.key===key;});
   if(!row) return alert('No encontré esa cuota.');
+  if(row.historicalApplied)return alert('Esta cuota ya figura aplicada en el plan externo.');
   selectedPaymentV3=row;
   const pending=Math.max(0,Number(row.amount||0)-Number(row.received||0));
   $('savePaymentButton').disabled=pending<=.5;
@@ -124,15 +126,15 @@ function renderBusinessWeek() {
   const d=bizTuesday(), rows=bizRowsForTuesday(d), expected=rows.reduce(function(s,r){return s+Number(r.amount||0);},0);
   const cash=bizCashForWeek(d), received=cash.total, lateRows=bizLateRows();
   const late=lateRows.reduce(function(s,r){return s+Number(r.missing||0);},0);
-  const pending=rows.reduce(function(s,r){return s+Math.max(0,Number(r.amount||0)-Number(r.received||0));},0)+late;
+  const pending=rows.reduce(function(s,r){return s+(r.historicalApplied?0:Math.max(0,Number(r.amount||0)-Number(r.received||0)));},0)+late;
   $('bizWeekLabel').textContent='Semana de cobro · martes '+new Intl.DateTimeFormat('es-CR',{day:'2-digit',month:'long',year:'numeric',timeZone:'UTC'}).format(d);
   $('bizExpected').textContent=money(expected);
   $('bizReceived').textContent=money(received);
   $('bizLate').textContent=money(late);
   $('bizPending').textContent=money(pending);
   $('bizIncomeBody').innerHTML=rows.length?rows.map(function(r){
-    const miss=Math.max(0,Number(r.amount||0)-Number(r.received||0));
-    return '<tr><td>'+bizStatusHtml(r)+'</td><td>'+escapeHtmlV3(r.vehicle)+'</td><td>'+fmtShort(r.date)+'</td><td>'+money(r.amount)+'</td><td>'+money(r.received)+'</td><td><b>'+money(miss)+'</b></td><td>'+fmtShort(r.realDate)+'</td><td><button class="dark miniBtn" onclick="openBusinessPaymentV4(\''+encodeURIComponent(r.key)+'\')">'+(miss<=.5?'Ver pagos':'Abonar')+'</button></td></tr>';
+    const miss=r.historicalApplied?0:Math.max(0,Number(r.amount||0)-Number(r.received||0));
+    return '<tr><td>'+bizStatusHtml(r)+'</td><td>'+escapeHtmlV3(r.vehicle)+'</td><td>'+fmtShort(r.date)+'</td><td>'+money(r.amount)+'</td><td>'+money(r.received)+'</td><td><b>'+money(miss)+'</b></td><td>'+fmtShort(r.realDate)+'</td><td><button class="dark miniBtn" onclick="openBusinessPaymentV4(\''+encodeURIComponent(r.key)+'\')">'+(r.historicalApplied?'Aplicado en plan':miss<=.5?'Ver pagos':'Abonar')+'</button></td></tr>';
   }).join(''):'<tr><td colspan="8">No hay pagos programados para esta semana.</td></tr>';
   $('bizLateList').innerHTML=lateRows.length?lateRows.map(function(r){
     return '<div class="lateItem"><div><b>'+escapeHtmlV3(r.vehicle)+' · pendiente '+money(r.missing)+'</b><div class="lateMeta">Debía pagar '+fmtShort(r.date)+' · '+r.weeksLate+' semana'+(r.weeksLate===1?'':'s')+' de atraso</div></div><button class="dark" onclick="openBusinessPaymentV4(\''+encodeURIComponent(r.key)+'\')">Abonar</button></div>';
