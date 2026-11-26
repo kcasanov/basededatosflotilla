@@ -194,7 +194,9 @@ function unmarkPayment_(body,device){
       // real del ingreso. La misma bitácora Central_Sync vuelve idempotente el ajuste.
       let globalAdjustment={ok:true,disabled:true,weekDate:realDate||'',message:'Sin aportes globales que ajustar.'};
       try{
-        if(typeof reconcileGlobalAfterPaymentReversal_==='function'){
+        const sourceVehicle=vehicleObjectById_(vehicleId);
+        const sourceEntity=String(sourceVehicle&&sourceVehicle.Entidad||'PERSONAL').toUpperCase();
+        if(sourceEntity==='PERSONAL'&&typeof reconcileGlobalAfterPaymentReversal_==='function'){
           globalAdjustment=reconcileGlobalAfterPaymentReversal_(device,date,realDate,true);
         }
       }catch(err){

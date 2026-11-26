@@ -382,12 +382,13 @@ async function saveUberWeekV3(vehicleId) {
   if(!confirm(`Guardar actualización Uber para ${fmtShort(date)}?`))return;
   const uberFundingWeek=paymentDistributionForMovement(date,isoDate(crTodayUTC()));
   const uberFundingTuesday=uberFundingWeek.week?parseDate(uberFundingWeek.week):operationalTuesday();
-  const beforeCentral=centralFundingSnapshot(uberFundingTuesday);
+  const uberIsPersonal=(contractVehicles.find(v=>v.id===vehicleId)?.entity||'PERSONAL')==='PERSONAL';
+  const beforeCentral=uberIsPersonal?centralFundingSnapshot(uberFundingTuesday):null;
   try{
     const r=await backend('saveUberWeek',payload); if(!r.ok)throw new Error(r.message||'No se pudo guardar');
     await loadProductionData(); await loadPlanDashboardV3(true); renderAll();
     alert(`Semana guardada. Disponible Uber: ${money(r.rawAvailable)} · saldo arrastrado: ${money(r.carryIn||0)} · pendiente de esa cuota: ${money(r.targetPending)}${Number(r.unapplied||0)>0?' · sobrante no arrastrado: '+money(r.unapplied):''}.`);
-    await offerCentralFunding(beforeCentral,uberFundingTuesday);
+    if(uberIsPersonal)await offerCentralFunding(beforeCentral,uberFundingTuesday);
   }catch(e){alert(e.message||'Error guardando Uber');}
 }
 
