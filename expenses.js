@@ -371,6 +371,12 @@
                        onclick="editExpenseLocal('${escapeAttrV3(d.id)}')"
                      >✏️ Editar</button>`
               }
+              <button
+                type="button"
+                class="light miniBtn removeExpenseButtonLocal"
+                onclick="removeExpenseLocal('${escapeAttrV3(d.id)}')"
+                title="Desactivar esta cuenta; conserva su historial"
+              >Eliminar</button>
 
             </div>
           </td>
@@ -560,6 +566,47 @@
     renderExpenseConfig();
   };
 
+window.removeExpenseLocal = async function(id) {
+  const account = expenseConfig.find(item => String(item.id) === String(id));
+  if (!account) return;
+
+  if (isDirtyLocal(id)) {
+    alert('Primero guardá o descartá los cambios pendientes de esta cuenta.');
+    return;
+  }
+
+  const confirmed = confirm('¿Eliminar "' + account.name + '" de Gastos y prioridades? La cuenta se desactivará, pero sus movimientos históricos se conservarán.');
+  if (!confirmed) return;
+
+  const button = document.querySelector('[data-expense-local-id="' + CSS.escape(String(id)) + '"] .removeExpenseButtonLocal');
+  if (button) {
+    button.disabled = true;
+    button.textContent = 'Quitando…';
+  }
+
+  try {
+    const response = await backend('deleteAccount', {
+      sessionToken: sessionStorage.getItem(SESSION_KEY),
+      accountId: id
+    });
+    if (!response || !response.ok) {
+      throw new Error((response && response.message) || 'No se pudo quitar la cuenta.');
+    }
+
+    drafts.delete(String(id));
+    originals.delete(String(id));
+    editing.delete(String(id));
+    await loadProductionData();
+    renderAll();
+    alert('Cuenta eliminada de Gastos y prioridades. El historial se conservó.');
+  } catch (error) {
+    if (button) {
+      button.disabled = false;
+      button.textContent = 'Eliminar';
+    }
+    alert(error.message || 'Error eliminando la cuenta.');
+  }
+};
 async function saveAllExpensesLocal() {
   const ids = dirtyIdsLocal();
 
@@ -878,6 +925,11 @@ async function saveAllExpensesLocal() {
 
       #discardExpenseChangesLocal{
         margin-left:8px;
+      }
+
+      .removeExpenseButtonLocal{
+        color:#a32121!important;
+        border-color:#e5a1a1!important;
       }
 
       body.dark #expenseConfigBody input,
