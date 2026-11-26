@@ -355,7 +355,7 @@ function getLateRows() {
     const missing = st.historicalApplied ? 0 : Math.max(0, ev.amount - st.received);
     const weeksLate = Math.max(1, Math.ceil((cutoff - parseDate(ev.date)) / 604800000));
     return { ...ev, ...st, missing, weeksLate, key: paymentKey(ev.vehicleId, ev.date) };
-  }).filter(r => r.missing > 0.01);
+  }).filter(r => r.missing > 0.5);
 }
 
 function isFifthTuesday(tuesday) {
@@ -648,7 +648,7 @@ function renderWeek() {
   $('wkPending').textContent = money(pending);
 
   $('weeklyIncomeBody').innerHTML = rows.length ? rows.map(r => {
-    const paid = r.received >= r.amount - .01;
+    const paid = r.received >= r.amount - .5;
     const partial = r.received > 0 && !paid;
     const label = paid ? 'Pagado' : partial ? 'Parcial' : 'Pendiente';
     return `<tr>

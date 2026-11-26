@@ -61,7 +61,7 @@ getLateRows = function () {
       if (!date || parseDate(date) >= cutoff) return;
       const key = paymentKey(v.id, date), st = getPaymentState(v.id, date);
       const amount = Number(p.quota || v.weekly || 0), missing = Math.max(0, amount - Number(st.received || 0));
-      if (missing <= .01) return;
+      if (missing <= .5) return;
       const weeksLate = Math.max(1, Math.ceil((cutoff - parseDate(date)) / 604800000));
       map.set(key, {
         planId:key, vehicleId:v.id, vehicle:v.name, date, amount, iva:amount * IVA_RATE, insurance:WEEKLY_INSURANCE,
@@ -152,7 +152,7 @@ async function savePaymentV3() {
     const res = await backend('markPayment', {
       sessionToken: sessionStorage.getItem(SESSION_KEY), planId: row.planId || row.key, vehicleId: row.vehicleId,
       fechaProgramada: row.date, fechaReal: realDate, montoEsperado: row.amount, montoRecibido: amount,
-      estado: after >= row.amount - .01 ? 'PAGADO' : 'PARCIAL', nota: $('paymentNote').value.trim(), origen: 'MANUAL'
+      estado: after >= row.amount - .5 ? 'PAGADO' : 'PARCIAL', nota: $('paymentNote').value.trim(), origen: 'MANUAL'
     });
     if (!res.ok) throw new Error(res.message || 'No se pudo registrar el abono');
     closePaymentV3(); await loadProductionData(); renderAll();
@@ -667,7 +667,7 @@ window.saveExpenseConfigV31 = saveExpenseConfigV31;
         status: String(p.Estado || ''), note: String(p.Nota || ''),
         createdAt: String(p.CreatedAt || p.FechaReal || ''), origin: String(p.Origen || 'MANUAL'), uberSemanaId: String(p.UberSemanaID || '')
       });
-      current.status = current.expected && current.received >= current.expected - .01 ? 'PAGADO' : current.received > 0 ? 'PARCIAL' : 'PENDIENTE';
+      current.status = current.expected && current.received >= current.expected - .5 ? 'PAGADO' : current.received > 0 ? 'PARCIAL' : 'PENDIENTE';
       paymentState[key] = current;
     });
 

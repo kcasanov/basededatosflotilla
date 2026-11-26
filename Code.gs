@@ -387,7 +387,7 @@ function previousCarry_(main,vehicleId,targetDate,legacySh,targetWeek){
   try{
     const rows=legacyObligationsTo_(legacySh,targetDate).filter(r=>r.date<targetDate&&pendingStatus_(r.state));
     const debt=rows.reduce((sum,r)=>sum+Math.max(0,num_(r.amount)-sumReceived_(main,vehicleId,r.date)),0);
-    if(debt>0.01)return -debt;
+    if(debt>PAYMENT_TOLERANCE_CRC_)return -debt;
   }catch(e){}
   const sh=main.getSheetByName('Uber_Semanas');
   if(sh){
