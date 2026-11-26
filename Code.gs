@@ -4,6 +4,7 @@ const MAX_FAILS_BEFORE_TOKEN = 2;
 const TOKEN_TTL_MIN = 10;
 const SESSION_PREFIX = 'session_';
 const TZ = 'America/Costa_Rica';
+const PAYMENT_TOLERANCE_CRC_ = 0.5; // ajuste de centavos por redondeo Uber.
 
 /**
  * Backend V3.0 · Base de Datos Flotilla
@@ -170,12 +171,12 @@ function markPayment_(body,device){
     if(!obligation||!pendingStatus_(obligation.state))return{ok:false,message:'Esta cuota histórica no está pendiente en el plan.'};
   }
   const ss=SpreadsheetApp.openById(mainSpreadsheetId_()),sh=ss.getSheetByName('Pagos_Reales'),already=sumReceived_(ss,vehicleId,date),remaining=expected>0?Math.max(0,expected-already):requested;
-  if(expected>0&&remaining<=0.005)return{ok:false,message:'Esta cuota ya está completamente pagada.'};
-  const amount=expected>0?Math.min(requested,remaining):requested,now=new Date(),pagoId=body.pagoId||Utilities.getUuid(),after=already+amount,state=expected>0&&after>=expected-0.01?'PAGADO':'PARCIAL';
+  if(expected>0&&remaining<=PAYMENT_TOLERANCE_CRC_)return{ok:false,message:'Esta cuota ya está completamente pagada.'};
+  const amount=expected>0?Math.min(requested,remaining):requested,now=new Date(),pagoId=body.pagoId||Utilities.getUuid(),after=already+amount,state=expected>0&&after>=expected-PAYMENT_TOLERANCE_CRC_?'PAGADO':'PARCIAL';
   sh.appendRow([pagoId,body.planId||'',vehicleId,date,body.fechaReal||Utilities.formatDate(now,TZ,'yyyy-MM-dd'),expected,amount,state,body.nota||'',now,now,body.origen||'MANUAL',body.uberSemanaId||'']);
   syncLegacyStatusForPayment_(vehicleId,date,expected);
   log_('PAGO',pagoId,'ADD_PAYMENT',JSON.stringify({vehicleId:vehicleId,amount:amount,requested:requested,origin:body.origen||'MANUAL'}),device);
-  return{ok:true,pagoId:pagoId,amountApplied:amount,totalReceived:after,pending:expected>0?Math.max(0,expected-after):0,status:state};
+  return{ok:true,pagoId:pagoId,amountApplied:amount,totalReceived:after,pending:expected>0&&expected-after>PAYMENT_TOLERANCE_CRC_?Math.max(0,expected-after):0,status:state};
 }
 function unmarkPayment_(body,device){
   const ss=SpreadsheetApp.openById(mainSpreadsheetId_()),sh=ss.getSheetByName('Pagos_Reales'),data=sh.getDataRange().getValues(),pagoId=String(body.pagoId||'');
@@ -193,7 +194,9 @@ function unmarkPayment_(body,device){
       // real del ingreso. La misma bitácora Central_Sync vuelve idempotente el ajuste.
       let globalAdjustment={ok:true,disabled:true,weekDate:realDate||'',message:'Sin aportes globales que ajustar.'};
       try{
-        if(typeof reconcileGlobalAfterPaymentReversal_==='function'){
+        const sourceVehicle=vehicleObjectById_(vehicleId);
+        const sourceEntity=String(sourceVehicle&&sourceVehicle.Entidad||'PERSONAL').toUpperCase();
+        if(sourceEntity==='PERSONAL'&&typeof reconcileGlobalAfterPaymentReversal_==='function'){
           globalAdjustment=reconcileGlobalAfterPaymentReversal_(device,date,realDate,true);
         }
       }catch(err){
@@ -233,11 +236,14 @@ function updateVehicleConfig_(body,device){
   const type=String(body.tipoCobro||'').toUpperCase(),op=String(body.operacionEstado||'ACTIVO').toUpperCase();
   if(type&&['UBER','PERSONAL'].indexOf(type)<0)return{ok:false,message:'Tipo de cobro inválido.'};
   if(['ACTIVO','FINALIZADO','CANCELADO'].indexOf(op)<0)return{ok:false,message:'Estado operativo inválido.'};
+  const entity=body.entidad===undefined?'':String(body.entidad||'').toUpperCase();
+  if(entity&&['PERSONAL','NEGOCIO','CATA'].indexOf(entity)<0)return{ok:false,message:'Entidad inválida.'};
   if (body.nombre !== undefined) sh.getRange(row,idx.Nombre+1).setValue(String(body.nombre||''));
   if (body.placa !== undefined) sh.getRange(row,idx.Placa+1).setValue(String(body.placa||'').trim().toUpperCase());
   const vals=[[String(body.chofer||''),type,String(body.planSheetTab||''),op,Boolean(body.planIntegracionActiva),String(body.configNota||'')]];
   sh.getRange(row,idx.Chofer+1,1,6).setValues(vals);
-  log_('VEHICULO',vehicleId,'UPDATE_CONFIG',JSON.stringify({name:body.nombre||'',plate:body.placa||'',type:type,driver:body.chofer||'',tab:body.planSheetTab||'',state:op}),device);
+  if(entity&&idx.Entidad!==undefined)sh.getRange(row,idx.Entidad+1).setValue(entity);
+  log_('VEHICULO',vehicleId,'UPDATE_CONFIG',JSON.stringify({name:body.nombre||'',plate:body.placa||'',type:type,driver:body.chofer||'',tab:body.planSheetTab||'',state:op,entity:entity}),device);
   return{ok:true};
 }
 
@@ -354,21 +360,21 @@ function saveUberWeekCore_(body,device){
   let available=rawAvailable; const allocations=[];
   const paymentSheet=main.getSheetByName('Pagos_Reales'),now=new Date();
   obligations.forEach(o=>{
-    if(available<=0.005)return;
+    if(available<=PAYMENT_TOLERANCE_CRC_)return;
     if(!pendingStatus_(o.legacyState))return;
-    const received=sumReceived_(main,vehicleId,o.date),missing=Math.max(0,num_(o.amount)-received); if(missing<=0.005)return;
+    const received=sumReceived_(main,vehicleId,o.date),missing=Math.max(0,num_(o.amount)-received); if(missing<=PAYMENT_TOLERANCE_CRC_)return;
     const use=Math.min(missing,available); if(use<=0)return;
-    const after=received+use,status=after>=num_(o.amount)-0.01?'PAGADO':'PARCIAL',pagoId=Utilities.getUuid();
+    const after=received+use,status=after>=num_(o.amount)-PAYMENT_TOLERANCE_CRC_?'PAGADO':'PARCIAL',pagoId=Utilities.getUuid();
     paymentSheet.appendRow([pagoId,o.planId||vehicleId+'|'+o.date,vehicleId,o.date,Utilities.formatDate(now,TZ,'yyyy-MM-dd'),num_(o.amount),use,status,'Aplicado automáticamente desde Uber',now,now,'UBER',uberId]);
     allocations.push({date:o.date,week:o.week,amount:use,status:status}); available-=use;
   });
 
   // Cliente solo ve Pagado o Pendiente. Parcial permanece Pendiente.
   obligations.filter(o=>pendingStatus_(o.legacyState)||allocations.some(a=>a.date===o.date)).forEach(o=>syncLegacyStatusForPayment_(vehicleId,o.date,num_(o.amount)));
-  const targetReceived=sumReceived_(main,vehicleId,targetDate),targetState=!pendingStatus_(target.legacyState)||targetReceived>=quota-0.01?'PAGADA':targetDate<operationalTuesday_()?'CERRADA_PENDIENTE':'PENDIENTE';
+  const targetReceived=sumReceived_(main,vehicleId,targetDate),targetState=!pendingStatus_(target.legacyState)||targetReceived>=quota-PAYMENT_TOLERANCE_CRC_?'PAGADA':targetDate<operationalTuesday_()?'CERRADA_PENDIENTE':'PENDIENTE';
   upsertUberWeek_(main,[uberId,vehicleId,tab,week,targetDate,gains,returns,adjust,carryIn,reimbursements,cash,quota,saldoSemana,rawAvailable,targetState,String(body.ocrTexto||''),now,now]);
   log_('UBER',uberId,'SAVE_WEEK',JSON.stringify({vehicleId:vehicleId,date:targetDate,rawAvailable:rawAvailable,carryIn:carryIn,allocations:allocations,unapplied:available}),device);
-  return{ok:true,uberSemanaId:uberId,week:week,carryIn:carryIn,reimbursementsTotal:reimbursements,saldoSemana:saldoSemana,rawAvailable:rawAvailable,allocations:allocations,unapplied:available,targetReceived:targetReceived,targetPending:targetState==='PAGADA'?0:Math.max(0,quota-targetReceived),targetState:targetState};
+  return{ok:true,uberSemanaId:uberId,week:week,carryIn:carryIn,reimbursementsTotal:reimbursements,saldoSemana:saldoSemana,rawAvailable:rawAvailable,allocations:allocations,unapplied:available,targetReceived:targetReceived,targetPending:targetState==='PAGADA'||quota-targetReceived<=PAYMENT_TOLERANCE_CRC_?0:Math.max(0,quota-targetReceived),targetState:targetState};
 }
 function removeUberRun_(main,uberId){
   const pay=main.getSheetByName('Pagos_Reales'),pv=pay.getDataRange().getValues(),ph=pv[0].map(String),uIdx=ph.indexOf('UberSemanaID'),affected=[];
@@ -386,7 +392,7 @@ function previousCarry_(main,vehicleId,targetDate,legacySh,targetWeek){
   try{
     const rows=legacyObligationsTo_(legacySh,targetDate).filter(r=>r.date<targetDate&&pendingStatus_(r.state));
     const debt=rows.reduce((sum,r)=>sum+Math.max(0,num_(r.amount)-sumReceived_(main,vehicleId,r.date)),0);
-    if(debt>0.01)return -debt;
+    if(debt>PAYMENT_TOLERANCE_CRC_)return -debt;
   }catch(e){}
   const sh=main.getSheetByName('Uber_Semanas');
   if(sh){
@@ -414,7 +420,7 @@ function sumReceived_(main,vehicleId,date){
 function syncLegacyStatusForPayment_(vehicleId,date,expected){
   try{
     const vehicle=vehicleObjectById_(vehicleId); if(!vehicle||!bool_(vehicle.PlanIntegracionActiva)||!vehicle.PlanSheetTab)return;
-    const main=SpreadsheetApp.openById(mainSpreadsheetId_()),received=sumReceived_(main,vehicleId,ymd_(date)),need=expected>0?expected:num_(vehicle.CuotaSemanal),state=received>=need-0.01?'Pagado':'Pendiente';
+    const main=SpreadsheetApp.openById(mainSpreadsheetId_()),received=sumReceived_(main,vehicleId,ymd_(date)),need=expected>0?expected:num_(vehicle.CuotaSemanal),state=received>=need-PAYMENT_TOLERANCE_CRC_?'Pagado':'Pendiente';
     const legacy=SpreadsheetApp.openById(planSpreadsheetId_()),sh=legacy.getSheetByName(String(vehicle.PlanSheetTab)); if(!sh)return;
     setLegacyStatus_(sh,ymd_(date),state);
   }catch(e){log_('SYNC',vehicleId,'LEGACY_STATUS_ERROR',String(e));}
@@ -469,15 +475,16 @@ function createAccount_(body,device){
   const headers=sh.getRange(1,1,1,sh.getLastColumn()).getValues()[0].map(String);
   const name=String(body.nombre||'').trim();if(!name)return{ok:false,message:'Nombre requerido.'};
   const entity=String(body.entidad||'NEGOCIO').toUpperCase();
-  if(entity!=='NEGOCIO')return{ok:false,message:'La creación desde esta vista solo está habilitada para Negocio.'};
+  if(!['NEGOCIO','CATA'].includes(entity))return{ok:false,message:'La creación desde esta vista solo está habilitada para Negocio y Cata.'};
   const type=String(body.tipo||'SEMANAL').toUpperCase(),priority=String(body.prioridad||'BAJA').toUpperCase();
   if(['SEMANAL','AUTOMATICO_PLAN','REMANENTE'].indexOf(type)<0)return{ok:false,message:'Tipo de cuenta inválido.'};
   if(['CRITICA','MEDIA','BAJA'].indexOf(priority)<0)return{ok:false,message:'Prioridad inválida.'};
   const periodicity=String(body.periodicidad||'SEMANAL').toUpperCase();
   const base=String(body.accountId||name).toLowerCase().replace(/[^a-z0-9]+/g,'_').replace(/^_+|_+$/g,'').slice(0,30)||'cuenta';
-  const accountId=(base.indexOf('soc_')===0?base:'soc_'+base)+'_'+Date.now();
+  const prefix=entity==='CATA'?'cata_':'soc_';
+  const accountId=(base.indexOf(prefix)===0?base:prefix+base)+'_'+Date.now();
   const current=sheetObjects_(sh);if(current.some(r=>String(r.CuentaID)===accountId))return{ok:false,message:'La cuenta ya existe.'};
-  const data={CuentaID:accountId,Nombre:name,Tipo:type,Monto:type==='SEMANAL'?Math.max(0,num_(body.monto)):0,Prioridad:priority,Orden:Math.max(1,Math.round(num_(body.orden)||99)),VigenteDesde:String(body.vigenteDesde||Utilities.formatDate(new Date(),TZ,'yyyy-MM-dd')),VigenteHasta:String(body.vigenteHasta||''),Activa:true,Entidad:'NEGOCIO',Periodicidad:periodicity};
+  const data={CuentaID:accountId,Nombre:name,Tipo:type,Monto:type==='SEMANAL'?Math.max(0,num_(body.monto)):0,Prioridad:priority,Orden:Math.max(1,Math.round(num_(body.orden)||99)),VigenteDesde:String(body.vigenteDesde||Utilities.formatDate(new Date(),TZ,'yyyy-MM-dd')),VigenteHasta:String(body.vigenteHasta||''),Activa:true,Entidad:entity,Periodicidad:periodicity};
   sh.appendRow(headers.map(h=>Object.prototype.hasOwnProperty.call(data,h)?data[h]:''));
   log_('CUENTA',accountId,'CREATE_ACCOUNT',JSON.stringify(data),device);
   return{ok:true,accountId:accountId};
@@ -490,7 +497,7 @@ function deleteAccount_(body,device){
   let row=-1;for(let r=1;r<values.length;r++)if(String(values[r][idx.CuentaID])===accountId){row=r+1;break;}
   if(row<0)return{ok:false,message:'Cuenta no encontrada.'};
   const entity=idx.Entidad!==undefined?String(sh.getRange(row,idx.Entidad+1).getValue()||'PERSONAL').toUpperCase():'PERSONAL';
-  if(entity!=='NEGOCIO')return{ok:false,message:'Solo se pueden quitar cuentas de Negocio desde esta vista.'};
+  if(!['NEGOCIO','CATA'].includes(entity))return{ok:false,message:'Solo se pueden quitar cuentas de Negocio o Cata desde esta vista.'};
   if(idx.Activa===undefined)return{ok:false,message:'La columna Activa no existe.'};
   sh.getRange(row,idx.Activa+1).setValue(false);
   log_('CUENTA',accountId,'DISABLE_ACCOUNT','Cuenta de Negocio desactivada',device);
@@ -525,7 +532,7 @@ function closeUberWeeks_(main,vehicleId){
     const date=ymd_(values[i][4]),quota=num_(values[i][11]),received=sumReceived_(main,vehicleId,date);
     const vehicle=vehicleObjectById_(vehicleId),tab=SpreadsheetApp.openById(planSpreadsheetId_()).getSheetByName(String(vehicle.PlanSheetTab));
     const plan=legacyObligationsTo_(tab,date).find(r=>r.date===date);
-    const state=(plan&&!pendingStatus_(plan.state))||received>=quota-.01?'PAGADA':date<operationalTuesday_()?'CERRADA_PENDIENTE':'PENDIENTE';
+    const state=(plan&&!pendingStatus_(plan.state))||received>=quota-PAYMENT_TOLERANCE_CRC_?'PAGADA':date<operationalTuesday_()?'CERRADA_PENDIENTE':'PENDIENTE';
     sh.getRange(i+1,stateIdx+1).setValue(state);
   }
 }
