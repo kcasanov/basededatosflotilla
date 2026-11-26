@@ -138,7 +138,7 @@ function renderBusinessWeek() {
   }).join(''):'<tr><td colspan="8">No hay pagos programados para esta semana.</td></tr>';
   $('bizLateList').innerHTML=lateRows.length?lateRows.map(function(r){
     return '<div class="lateItem"><div><b>'+escapeHtmlV3(r.vehicle)+' · pendiente '+money(r.missing)+'</b><div class="lateMeta">Debía pagar '+fmtShort(r.date)+' · '+r.weeksLate+' semana'+(r.weeksLate===1?'':'s')+' de atraso</div></div><button class="dark" onclick="openBusinessPaymentV4(\''+encodeURIComponent(r.key)+'\')">Abonar</button></div>';
-  }).join(''):'<div class="placeholder">No hay ingresos atrasados de Negocio.</div>';
+  }).join(''):'<div class="placeholder">No hay ingresos atrasados de '+managedLabelV5()+'.</div>';
   const allocated=bizAllocate(bizCurrentExpenses(rows,d),cash.operational,cash.debtRecovery);
   const used=allocated.reduce(function(s,e){return s+Number(e.assigned||0);},0);
   const gap=allocated.filter(function(e){return e.type!=='remainder';}).reduce(function(s,e){return s+Math.max(0,e.need-e.assigned);},0);
@@ -222,7 +222,7 @@ function renderBusinessProjection() {
   const max=Math.max(1,...vals.map(function(x){return Math.abs(x[1].scenarioNet);}));
   $('bizProjectionBars').innerHTML=vals.map(function(x){return '<div class="barRow"><div>'+x[0]+'</div><div class="barTrack"><div class="barFill" style="width:'+Math.max(2,Math.abs(x[1].scenarioNet)/max*100)+'%"></div></div><div>'+money(x[1].scenarioNet)+'</div></div>';}).join('');
   const impacts=[1,2,3].map(function(n){return vals.reduce(function(s,x){const p=x[0].split('-').map(Number);return s+bizProjectMonth(p[0],p[1]-1,n,extraWeekly).extraNet;},0);});
-  $('bizScenarioSummary').innerHTML='<div class="note"><b>Neto base:</b> '+money(net)+'<br><br><b>+1 carro:</b> '+money(net+impacts[0])+'<br><b>+2 carros:</b> '+money(net+impacts[1])+'<br><b>+3 carros:</b> '+money(net+impacts[2])+'<br><br><span style="color:#667085">Solo utiliza vehículos y gastos de Negocio.</span></div>';
+  $('bizScenarioSummary').innerHTML='<div class="note"><b>Neto base:</b> '+money(net)+'<br><br><b>+1 carro:</b> '+money(net+impacts[0])+'<br><b>+2 carros:</b> '+money(net+impacts[1])+'<br><b>+3 carros:</b> '+money(net+impacts[2])+'<br><br><span style="color:#667085">Solo utiliza vehículos y gastos de '+managedLabelV5()+'.</span></div>';
 }
 function renderBusinessAll() {
   renderBusinessWeek();renderBusinessExpenseConfig();renderBusinessProjection();
@@ -242,6 +242,10 @@ function managedHeadingsV5() {
   if(projectionTitle)projectionTitle.textContent='Proyecciones · '+label;
   const allocationTitle=$('bizSemana')?.querySelector('.sectionHead h2');
   if(allocationTitle)allocationTitle.textContent='Distribución de gastos · '+label;
+  const projectionNote=$('bizProyecciones')?.querySelector('.sectionHead .status');
+  if(projectionNote)projectionNote.textContent='Solo vehículos y gastos asignados a '+label+'.';
+  const incomeNote=$('bizSemana')?.querySelector('.sectionHead .status');
+  if(incomeNote)incomeNote.textContent='Solo se distribuye dinero realmente recibido por '+label+'.';
 }
 function applyScopeV4(scope) {
   if(!['PERSONAL','NEGOCIO','CATA'].includes(scope))scope='PERSONAL';
