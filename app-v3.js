@@ -412,6 +412,7 @@ function renderConfigV3() {
   body.innerHTML=contractVehicles.map(v=>`<tr data-config-row="${v.id}">
     <td><input data-c="name" value="${escapeAttrV3(v.name)}"></td><td><input data-c="plate" value="${escapeAttrV3(v.plate)}"></td><td><input data-c="driver" value="${escapeAttrV3(v.driver||'')}"></td>
     <td><select data-c="type"><option value="" ${!v.paymentType?'selected':''}>Sin configurar</option><option value="UBER" ${v.paymentType==='UBER'?'selected':''}>Uber</option><option value="PERSONAL" ${v.paymentType==='PERSONAL'?'selected':''}>Uso personal</option></select></td>
+    <td><select data-c="entity"><option value="PERSONAL" ${v.entity==='PERSONAL'?'selected':''}>Personal</option><option value="CATA" ${v.entity==='CATA'?'selected':''}>Cata</option><option value="NEGOCIO" ${v.entity==='NEGOCIO'?'selected':''}>Sociedad</option></select></td>
     <td><input data-c="tab" value="${escapeAttrV3(v.planSheetTab||'')}" placeholder="Ej. S1 Pro"></td>
     <td><select data-c="state"><option value="ACTIVO" ${v.operationStatus==='ACTIVO'?'selected':''}>Activo</option><option value="FINALIZADO" ${v.operationStatus==='FINALIZADO'?'selected':''}>Finalizado</option><option value="CANCELADO" ${v.operationStatus==='CANCELADO'?'selected':''}>Cancelado</option></select></td>
     <td style="text-align:center"><input data-c="integration" type="checkbox" ${v.planIntegrationActive?'checked':''} style="width:auto"></td>
@@ -422,7 +423,7 @@ function openConfigV3(){renderConfigV3();$('configModal').classList.add('show');
 function closeConfigV3(){$('configModal').classList.remove('show');}
 async function saveVehicleConfigV3(vehicleId){
   const row=document.querySelector(`[data-config-row="${CSS.escape(vehicleId)}"]`);if(!row)return;
-  const get=n=>row.querySelector(`[data-c="${n}"]`),payload={sessionToken:sessionStorage.getItem(SESSION_KEY),vehicleId,nombre:get('name').value.trim(),placa:get('plate').value.trim(),chofer:get('driver').value.trim(),tipoCobro:get('type').value,planSheetTab:get('tab').value.trim(),operacionEstado:get('state').value,planIntegracionActiva:get('integration').checked};
+  const get=n=>row.querySelector(`[data-c="${n}"]`),payload={sessionToken:sessionStorage.getItem(SESSION_KEY),vehicleId,nombre:get('name').value.trim(),placa:get('plate').value.trim(),chofer:get('driver').value.trim(),tipoCobro:get('type').value,entidad:get('entity').value,planSheetTab:get('tab').value.trim(),operacionEstado:get('state').value,planIntegracionActiva:get('integration').checked};
   try{const r=await backend('updateVehicleConfig',payload);if(!r.ok)throw new Error(r.message||'No se pudo guardar');await loadProductionData();renderAll();renderConfigV3();window.refreshPlanInBackgroundV34?.();}
   catch(e){alert(e.message||'Error guardando configuración');}
 }

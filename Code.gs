@@ -234,11 +234,14 @@ function updateVehicleConfig_(body,device){
   const type=String(body.tipoCobro||'').toUpperCase(),op=String(body.operacionEstado||'ACTIVO').toUpperCase();
   if(type&&['UBER','PERSONAL'].indexOf(type)<0)return{ok:false,message:'Tipo de cobro inválido.'};
   if(['ACTIVO','FINALIZADO','CANCELADO'].indexOf(op)<0)return{ok:false,message:'Estado operativo inválido.'};
+  const entity=body.entidad===undefined?'':String(body.entidad||'').toUpperCase();
+  if(entity&&['PERSONAL','NEGOCIO','CATA'].indexOf(entity)<0)return{ok:false,message:'Entidad inválida.'};
   if (body.nombre !== undefined) sh.getRange(row,idx.Nombre+1).setValue(String(body.nombre||''));
   if (body.placa !== undefined) sh.getRange(row,idx.Placa+1).setValue(String(body.placa||'').trim().toUpperCase());
   const vals=[[String(body.chofer||''),type,String(body.planSheetTab||''),op,Boolean(body.planIntegracionActiva),String(body.configNota||'')]];
   sh.getRange(row,idx.Chofer+1,1,6).setValues(vals);
-  log_('VEHICULO',vehicleId,'UPDATE_CONFIG',JSON.stringify({name:body.nombre||'',plate:body.placa||'',type:type,driver:body.chofer||'',tab:body.planSheetTab||'',state:op}),device);
+  if(entity&&idx.Entidad!==undefined)sh.getRange(row,idx.Entidad+1).setValue(entity);
+  log_('VEHICULO',vehicleId,'UPDATE_CONFIG',JSON.stringify({name:body.nombre||'',plate:body.placa||'',type:type,driver:body.chofer||'',tab:body.planSheetTab||'',state:op,entity:entity}),device);
   return{ok:true};
 }
 
