@@ -163,7 +163,7 @@ body.dark .vehicleControlCard,body.dark .uberForm,body.dark .legacySummary{backg
 <div id="appShell">
 <header><div class="wrap" style="padding-bottom:0"><div class="headerFlex">
 <div><h1 style="margin:0">Base de Datos Flotilla</h1><div id="appSubtitle" style="opacity:.75">Administración personal · V4</div></div>
-<div class="scopeSwitcher"><label for="scopeSelector">Vista</label><select id="scopeSelector"><option value="PERSONAL">Carros personales</option><option value="NEGOCIO">Negocio</option></select></div>
+<div class="scopeSwitcher"><label for="scopeSelector">Vista</label><select id="scopeSelector"><option value="PERSONAL">Carros personales</option><option value="NEGOCIO">Negocio</option><option value="CATA">Carros de Cata</option></select></div>
 <div class="headerActions"><button id="configButton" class="configButton" type="button">⚙️ Configuración</button><button id="themeToggle" class="themeToggle">🌙 Modo oscuro</button></div>
 </div></div></header>
 <div class="nav">
@@ -272,7 +272,7 @@ body.dark .vehicleControlCard,body.dark .uberForm,body.dark .legacySummary{backg
   <div class="modalCard">
     <h2 id="paymentModalTitle">Registrar abono</h2>
     <div id="paymentModalInfo" class="note"></div>
-    <label>Monto recibido</label><input id="paymentAmount" type="number" min="0" step="1000" inputmode="numeric">
+    <label>Monto recibido</label><input id="paymentAmount" type="number" min="0" step="0.01" inputmode="decimal">
     <label style="margin-top:10px">Nota (opcional)</label><input id="paymentNote" placeholder="Ej. Abono parcial">
     <h3>Movimientos registrados</h3><div id="paymentHistory"></div>
     <div class="actions"><button id="savePaymentButton" class="dark">Registrar abono</button><button id="cancelPaymentButton" class="light">Cancelar</button></div>
@@ -450,14 +450,14 @@ body.dark .vehicleControlCard,body.dark .uberForm,body.dark .legacySummary{backg
 <div class="modal" id="configModal">
   <div class="modalCard wideModal">
     <div class="sectionHead"><div><h2>⚙️ Configuración</h2><div class="status">Datos operativos que normalmente solo se configuran una vez.</div></div><button id="closeConfigButton" class="light">Cerrar</button></div>
-    <div class="table" style="margin-top:14px"><table class="configTable"><thead><tr><th>Vehículo</th><th>Placa</th><th>Chofer</th><th>Tipo</th><th>Tab Plan pagos</th><th>Estado</th><th>Sincronizar plan</th><th>Acción</th></tr></thead><tbody id="configVehiclesBody"></tbody></table></div>
+    <div class="table" style="margin-top:14px"><table class="configTable"><thead><tr><th>Vehículo</th><th>Placa</th><th>Chofer</th><th>Tipo</th><th>Entidad</th><th>Tab Plan pagos</th><th>Estado</th><th>Sincronizar plan</th><th>Acción</th></tr></thead><tbody id="configVehiclesBody"></tbody></table></div>
     <div class="note">Al finalizar o cancelar un contrato, no se elimina el historial: solo deja de aparecer en la operación diaria.</div>
   </div>
 </div>
 
 <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js" defer></script>
-<script src="./app.js?v=6"></script>
-<script src="./app-v3.js?v=6"></script>
-<script src="./expenses.js?v=6"></script>
-<script src="./business.js?v=1"></script>
+<script src="./app.js?v=7"></script>
+<script src="./app-v3.js?v=7"></script>
+<script src="./expenses.js?v=7"></script>
+<script src="./business.js?v=2"></script>
 </div></body></html>

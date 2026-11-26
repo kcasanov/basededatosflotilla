@@ -22,6 +22,7 @@ let pendingLatePayment = null;
 
 let expenseConfig = [];
 let businessExpenseConfig = [];
+let cataExpenseConfig = [];
 let contractVehicles = [];
 let planPayments = [];
 const paymentState = Object.create(null);
@@ -112,7 +113,7 @@ function cashAllocationForWeek(tuesday = weekDate()) {
     const vehicleId = parts[0] || '';
     const scheduledDate = parts[1] || '';
     const vehicle = contractVehicles.find(v => v.id === vehicleId);
-    if (vehicle && vehicle.entity === 'NEGOCIO') return;
+    if (!vehicle || vehicle.entity !== 'PERSONAL') return;
     const movements = state.movements?.length ? state.movements : [{date:state.realDate,amount:state.received}];
     movements.forEach(movement => {
       const allocation = paymentDistributionForMovement(scheduledDate, movement.date);
@@ -218,8 +219,9 @@ async function loadProductionData() {
         periodicity
       };
     }) : [];
-  expenseConfig = mappedAccounts.filter(a => a.entity !== 'NEGOCIO');
+  expenseConfig = mappedAccounts.filter(a => a.entity === 'PERSONAL');
   businessExpenseConfig = mappedAccounts.filter(a => a.entity === 'NEGOCIO');
+  cataExpenseConfig = mappedAccounts.filter(a => a.entity === 'CATA');
 
   planPayments = Array.isArray(r.plans) ? r.plans.map(p => ({
     planId: String(p.PlanID || ''),
@@ -312,7 +314,7 @@ function scheduledEventsForVehicle(v, start, end) {
 }
 function allScheduledEventsBetween(start, end) {
   return contractVehicles
-    .filter(v => v.entity !== 'NEGOCIO')
+    .filter(v => v.entity === 'PERSONAL')
     .flatMap(v => scheduledEventsForVehicle(v, start, end))
     .sort((a, b) => a.date.localeCompare(b.date));
 }
@@ -338,7 +340,7 @@ function rowsForTuesday(tuesday) {
 }
 function rowsForCurrentWeek() { return rowsForTuesday(weekDate()); }
 function trackingStartDate() {
-  const created = contractVehicles.filter(v => v.entity !== 'NEGOCIO').map(v => v.createdAt).filter(Boolean).sort()[0];
+  const created = contractVehicles.filter(v => v.entity === 'PERSONAL').map(v => v.createdAt).filter(Boolean).sort()[0];
   if (created) return nextOrSameTuesday(parseDate(created));
   return nextOrSameTuesday(crTodayUTC());
 }
@@ -353,7 +355,7 @@ function getLateRows() {
     const missing = st.historicalApplied ? 0 : Math.max(0, ev.amount - st.received);
     const weeksLate = Math.max(1, Math.ceil((cutoff - parseDate(ev.date)) / 604800000));
     return { ...ev, ...st, missing, weeksLate, key: paymentKey(ev.vehicleId, ev.date) };
-  }).filter(r => r.missing > 0.01);
+  }).filter(r => r.missing > 0.5);
 }
 
 function isFifthTuesday(tuesday) {
@@ -646,7 +648,7 @@ function renderWeek() {
   $('wkPending').textContent = money(pending);
 
   $('weeklyIncomeBody').innerHTML = rows.length ? rows.map(r => {
-    const paid = r.received >= r.amount - .01;
+    const paid = r.received >= r.amount - .5;
     const partial = r.received > 0 && !paid;
     const label = paid ? 'Pagado' : partial ? 'Parcial' : 'Pendiente';
     return `<tr>
@@ -760,7 +762,7 @@ function vehicleStats(v) {
   };
 }
 function renderVehicles() {
-  const personalVehicles = contractVehicles.filter(v => v.entity !== 'NEGOCIO');
+  const personalVehicles = contractVehicles.filter(v => v.entity === 'PERSONAL');
   $('vehiclesBody').innerHTML = personalVehicles.length ? personalVehicles.map(v => {
     const st = vehicleStats(v), lateRows = vehicleLateRows(v), lateAmt = lateRows.reduce((s, x) => s + x.missing, 0);
     return `<tr>

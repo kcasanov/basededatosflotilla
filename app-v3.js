@@ -39,7 +39,8 @@ function openPaymentRowsV3(vehicleId) {
   return [...map.values()].sort((a, b) => a.date.localeCompare(b.date));
 }
 function paymentStatusV3(row) {
-  const pending = row.historicalApplied ? 0 : Math.max(0, Number(row.amount || 0) - Number(row.received || 0));
+  const exactPending = row.historicalApplied ? 0 : Math.max(0, Number(row.amount || 0) - Number(row.received || 0));
+  const pending = exactPending <= .5 ? 0 : exactPending; // Uber: diferencia menor a medio colón.
   return { pending, paid: pending <= .01, partial: Number(row.received || 0) > 0 && pending > .01 };
 }
 function duePendingWeekV3(row, today = isoDate(crTodayUTC())) {
@@ -54,13 +55,13 @@ getLateRows = function () {
   const cutoff = weekDate();
   planDashboardV3.forEach(card => {
     const v = contractVehicles.find(x => x.id === card.vehicleId);
-    if (!v || v.entity === 'NEGOCIO' || !Array.isArray(card.legacyPending)) return;
+    if (!v || v.entity !== 'PERSONAL' || !Array.isArray(card.legacyPending)) return;
     card.legacyPending.forEach(p => {
       const date = normalizeSheetDate(p.date);
       if (!date || parseDate(date) >= cutoff) return;
       const key = paymentKey(v.id, date), st = getPaymentState(v.id, date);
       const amount = Number(p.quota || v.weekly || 0), missing = Math.max(0, amount - Number(st.received || 0));
-      if (missing <= .01) return;
+      if (missing <= .5) return;
       const weeksLate = Math.max(1, Math.ceil((cutoff - parseDate(date)) / 604800000));
       map.set(key, {
         planId:key, vehicleId:v.id, vehicle:v.name, date, amount, iva:amount * IVA_RATE, insurance:WEEKLY_INSURANCE,
@@ -75,7 +76,7 @@ getLateRows = function () {
 // Finalizado/cancelado deja de generar obligaciones nuevas, pero conserva historial.
 allScheduledEventsBetween = function(start, end) {
   return contractVehicles
-    .filter(v => v.entity !== 'NEGOCIO')
+    .filter(v => v.entity === 'PERSONAL')
     .filter(v => !['FINALIZADO','CANCELADO'].includes(v.operationStatus || 'ACTIVO'))
     .flatMap(v => scheduledEventsForVehicle(v, start, end))
     .sort((a,b) => a.date.localeCompare(b.date));
@@ -121,7 +122,7 @@ function openPaymentV3(encodedKey) {
   $('savePaymentButton').disabled = s.paid;
   $('paymentModalTitle').textContent = row.vehicle;
   $('paymentModalInfo').innerHTML = `<b>Cuota:</b> ${money(row.amount)} · <b>Recibido:</b> ${money(row.received)} · <b>Pendiente:</b> ${money(s.pending)}<br><span class="miniNote">Semana ${fmtShort(row.date)}</span>`;
-  $('paymentAmount').value = Math.round(s.pending || 0);
+  $('paymentAmount').value = s.pending > .5 ? Math.ceil(s.pending) : 0;
   $('paymentNote').value = '';
   $('paymentHistory').innerHTML = paymentHistoryHtmlV3(row.key);
   $('paymentModal').classList.add('show');
@@ -136,25 +137,27 @@ function closePaymentV3() { $('paymentModal').classList.remove('show'); selected
 async function savePaymentV3() {
   if (!selectedPaymentV3) return;
   const row = selectedPaymentV3, amount = Number($('paymentAmount').value || 0), st = getPaymentState(row.vehicleId, row.date), pending = Math.max(0, row.amount - st.received);
+  const paymentIsPersonal = (contractVehicles.find(v => v.id === row.vehicleId)?.entity || 'PERSONAL') === 'PERSONAL';
   if (!(amount > 0)) return alert('Ingresá un monto mayor a ₡0.');
-  if (pending <= .01) return alert('Esta cuota ya está completamente pagada.');
-  if (amount > pending + .01) return alert(`El máximo que falta de esta cuota es ${money(pending)}. Si existe dinero adicional, registralo en la siguiente semana correspondiente.`);
+  if (pending <= .5) return alert('Esta cuota ya está completamente pagada (redondeada al colón).');
+  // Permitir redondear hacia arriba a colones. El backend aplica solo el saldo real.
+  if (amount > Math.ceil(pending) + .01) return alert(`El máximo que falta de esta cuota es ${money(Math.ceil(pending))}. Si existe dinero adicional, registralo en la siguiente semana correspondiente.`);
   $('savePaymentButton').disabled = true;
   const realDate = isoDate(crTodayUTC());
   const fundingWeek = paymentDistributionForMovement(row.date, realDate);
   const fundingTuesday = fundingWeek.week ? parseDate(fundingWeek.week) : operationalTuesday();
-  const beforeCentral = centralFundingSnapshot(fundingTuesday);
+  const beforeCentral = paymentIsPersonal ? centralFundingSnapshot(fundingTuesday) : null;
   try {
     const after = st.received + amount;
     const res = await backend('markPayment', {
       sessionToken: sessionStorage.getItem(SESSION_KEY), planId: row.planId || row.key, vehicleId: row.vehicleId,
       fechaProgramada: row.date, fechaReal: realDate, montoEsperado: row.amount, montoRecibido: amount,
-      estado: after >= row.amount - .01 ? 'PAGADO' : 'PARCIAL', nota: $('paymentNote').value.trim(), origen: 'MANUAL'
+      estado: after >= row.amount - .5 ? 'PAGADO' : 'PARCIAL', nota: $('paymentNote').value.trim(), origen: 'MANUAL'
     });
     if (!res.ok) throw new Error(res.message || 'No se pudo registrar el abono');
     closePaymentV3(); await loadProductionData(); renderAll();
     window.refreshPlanInBackgroundV34?.();
-    await offerCentralFunding(beforeCentral, fundingTuesday);
+    if (paymentIsPersonal) await offerCentralFunding(beforeCentral, fundingTuesday);
   } catch (e) { alert(e.message || 'Error registrando el abono'); }
   finally { $('savePaymentButton').disabled = false; }
 }
@@ -197,7 +200,7 @@ async function loadPlanDashboardV3(force = false) {
 function dashboardCardV3(vehicleId) { return planDashboardV3.find(c => c.vehicleId === vehicleId) || null; }
 function renderUberV3() {
   const box = $('uberCards'); if (!box) return;
-  const vehicles = contractVehicles.filter(v => v.entity !== 'NEGOCIO' && !['FINALIZADO','CANCELADO'].includes(v.operationStatus || 'ACTIVO'));
+  const vehicles = contractVehicles.filter(v => v.entity === 'PERSONAL' && !['FINALIZADO','CANCELADO'].includes(v.operationStatus || 'ACTIVO'));
   if (!vehicles.length) { box.innerHTML = '<div class="placeholder">No hay vehículos activos.</div>'; return; }
   box.innerHTML = vehicles.map(v => {
     const open = openPaymentRowsV3(v.id), pending = open.filter(r => duePendingWeekV3(r)), pendingAmt = pending.reduce((s,r)=>s+paymentStatusV3(r).pending,0), dash = dashboardCardV3(v.id);
@@ -246,7 +249,7 @@ function uberBodyV3(v, dash, rows) {
       <div class="actions"><button class="dark" onclick="saveUberWeekV3('${v.id}')">Guardar semana Uber</button></div>
     </div>
   </div>
-  <div class="pendingWeeks"><h3>Semanas Uber registradas</h3>${uberWeeksV3.filter(u=>u.vehicleId===v.id).sort((a,b)=>b.date.localeCompare(a.date)).map(u=>`<div class="movementRow"><span>Semana ${u.week} · ${fmtShort(u.date)}</span><b>${escapeHtmlV3(u.status)}</b></div>`).join('')}<h3>Semanas pendientes</h3>${pendingWeeks.length ? pendingWeeks.map(r=>`<div class="pendingWeekLine"><span>${fmtShort(r.date)} · ${money(r.received)} de ${money(r.amount)}</span><b>${money(paymentStatusV3(r).pending)} pendiente</b><button class="light miniBtn" onclick="jumpToWeekV3('${r.date}')">Ver</button></div>`).join('') : '<div class="placeholder smallPlaceholder">Sin semanas pendientes.</div>'}</div>`;
+  <div class="pendingWeeks"><h3>Semanas Uber registradas</h3>${uberWeeksV3.filter(u=>u.vehicleId===v.id).sort((a,b)=>b.date.localeCompare(a.date)).map(u=>`<div class="movementRow"><span>Semana ${u.week} · ${fmtShort(u.date)}</span><b>${escapeHtmlV3(paymentStatusV3({amount:u.quota || v.weekly,received:getPaymentState(v.id,u.date).received}).paid?'PAGADA':u.status)}</b></div>`).join('')}<h3>Semanas pendientes</h3>${pendingWeeks.length ? pendingWeeks.map(r=>`<div class="pendingWeekLine"><span>${fmtShort(r.date)} · ${money(r.received)} de ${money(r.amount)}</span><b>${money(paymentStatusV3(r).pending)} pendiente</b><button class="light miniBtn" onclick="jumpToWeekV3('${r.date}')">Ver</button></div>`).join('') : '<div class="placeholder smallPlaceholder">Sin semanas pendientes.</div>'}</div>`;
 }
 function toggleVehicleCardV3(vehicleId) {
   const body = document.querySelector(`[data-card-body="${CSS.escape(vehicleId)}"]`); if (body) body.classList.toggle('collapsed');
@@ -379,12 +382,13 @@ async function saveUberWeekV3(vehicleId) {
   if(!confirm(`Guardar actualización Uber para ${fmtShort(date)}?`))return;
   const uberFundingWeek=paymentDistributionForMovement(date,isoDate(crTodayUTC()));
   const uberFundingTuesday=uberFundingWeek.week?parseDate(uberFundingWeek.week):operationalTuesday();
-  const beforeCentral=centralFundingSnapshot(uberFundingTuesday);
+  const uberIsPersonal=(contractVehicles.find(v=>v.id===vehicleId)?.entity||'PERSONAL')==='PERSONAL';
+  const beforeCentral=uberIsPersonal?centralFundingSnapshot(uberFundingTuesday):null;
   try{
     const r=await backend('saveUberWeek',payload); if(!r.ok)throw new Error(r.message||'No se pudo guardar');
     await loadProductionData(); await loadPlanDashboardV3(true); renderAll();
     alert(`Semana guardada. Disponible Uber: ${money(r.rawAvailable)} · saldo arrastrado: ${money(r.carryIn||0)} · pendiente de esa cuota: ${money(r.targetPending)}${Number(r.unapplied||0)>0?' · sobrante no arrastrado: '+money(r.unapplied):''}.`);
-    await offerCentralFunding(beforeCentral,uberFundingTuesday);
+    if(uberIsPersonal)await offerCentralFunding(beforeCentral,uberFundingTuesday);
   }catch(e){alert(e.message||'Error guardando Uber');}
 }
 
@@ -409,6 +413,7 @@ function renderConfigV3() {
   body.innerHTML=contractVehicles.map(v=>`<tr data-config-row="${v.id}">
     <td><input data-c="name" value="${escapeAttrV3(v.name)}"></td><td><input data-c="plate" value="${escapeAttrV3(v.plate)}"></td><td><input data-c="driver" value="${escapeAttrV3(v.driver||'')}"></td>
     <td><select data-c="type"><option value="" ${!v.paymentType?'selected':''}>Sin configurar</option><option value="UBER" ${v.paymentType==='UBER'?'selected':''}>Uber</option><option value="PERSONAL" ${v.paymentType==='PERSONAL'?'selected':''}>Uso personal</option></select></td>
+    <td><select data-c="entity"><option value="PERSONAL" ${v.entity==='PERSONAL'?'selected':''}>Personal</option><option value="CATA" ${v.entity==='CATA'?'selected':''}>Cata</option><option value="NEGOCIO" ${v.entity==='NEGOCIO'?'selected':''}>Sociedad</option></select></td>
     <td><input data-c="tab" value="${escapeAttrV3(v.planSheetTab||'')}" placeholder="Ej. S1 Pro"></td>
     <td><select data-c="state"><option value="ACTIVO" ${v.operationStatus==='ACTIVO'?'selected':''}>Activo</option><option value="FINALIZADO" ${v.operationStatus==='FINALIZADO'?'selected':''}>Finalizado</option><option value="CANCELADO" ${v.operationStatus==='CANCELADO'?'selected':''}>Cancelado</option></select></td>
     <td style="text-align:center"><input data-c="integration" type="checkbox" ${v.planIntegrationActive?'checked':''} style="width:auto"></td>
@@ -419,7 +424,7 @@ function openConfigV3(){renderConfigV3();$('configModal').classList.add('show');
 function closeConfigV3(){$('configModal').classList.remove('show');}
 async function saveVehicleConfigV3(vehicleId){
   const row=document.querySelector(`[data-config-row="${CSS.escape(vehicleId)}"]`);if(!row)return;
-  const get=n=>row.querySelector(`[data-c="${n}"]`),payload={sessionToken:sessionStorage.getItem(SESSION_KEY),vehicleId,nombre:get('name').value.trim(),placa:get('plate').value.trim(),chofer:get('driver').value.trim(),tipoCobro:get('type').value,planSheetTab:get('tab').value.trim(),operacionEstado:get('state').value,planIntegracionActiva:get('integration').checked};
+  const get=n=>row.querySelector(`[data-c="${n}"]`),payload={sessionToken:sessionStorage.getItem(SESSION_KEY),vehicleId,nombre:get('name').value.trim(),placa:get('plate').value.trim(),chofer:get('driver').value.trim(),tipoCobro:get('type').value,entidad:get('entity').value,planSheetTab:get('tab').value.trim(),operacionEstado:get('state').value,planIntegracionActiva:get('integration').checked};
   try{const r=await backend('updateVehicleConfig',payload);if(!r.ok)throw new Error(r.message||'No se pudo guardar');await loadProductionData();renderAll();renderConfigV3();window.refreshPlanInBackgroundV34?.();}
   catch(e){alert(e.message||'Error guardando configuración');}
 }
@@ -664,7 +669,7 @@ window.saveExpenseConfigV31 = saveExpenseConfigV31;
         status: String(p.Estado || ''), note: String(p.Nota || ''),
         createdAt: String(p.CreatedAt || p.FechaReal || ''), origin: String(p.Origen || 'MANUAL'), uberSemanaId: String(p.UberSemanaID || '')
       });
-      current.status = current.expected && current.received >= current.expected - .01 ? 'PAGADO' : current.received > 0 ? 'PARCIAL' : 'PENDIENTE';
+      current.status = current.expected && current.received >= current.expected - .5 ? 'PAGADO' : current.received > 0 ? 'PARCIAL' : 'PENDIENTE';
       paymentState[key] = current;
     });
 
@@ -877,6 +882,7 @@ window.saveExpenseConfigV31 = saveExpenseConfigV31;
 let movementHistoryLimit = 10;
 function movementHistoryRows() {
   return [...Object.entries(paymentState).flatMap(([key,st])=>(st.movements || []).map((m,index)=>({...m,key,index}))),...reversedMovements]
+    .filter(m => contractVehicles.some(v => v.id === String(m.key || '').split('|')[0] && v.entity === 'PERSONAL'))
     .sort((a,b)=>String(b.createdAt || b.date).localeCompare(String(a.createdAt || a.date)) || b.index-a.index);
 }
 function renderMovementHistory() {

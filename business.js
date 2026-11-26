@@ -2,11 +2,14 @@
 
 let businessWeekOffset = 0;
 let activeBusinessView = 'bizSemana';
+let activeManagedEntityV5 = 'NEGOCIO';
+function managedExpenseConfigV5() { return activeManagedEntityV5 === 'CATA' ? cataExpenseConfig : businessExpenseConfig; }
+function managedLabelV5() { return activeManagedEntityV5 === 'CATA' ? 'Cata' : 'Sociedad'; }
 let lastPersonalView = 'resumen';
 
 function bizVehicleList() {
   return contractVehicles.filter(function(v) {
-    return v.entity === 'NEGOCIO' && !['FINALIZADO','CANCELADO'].includes(v.operationStatus || 'ACTIVO');
+    return v.entity === activeManagedEntityV5 && !['FINALIZADO','CANCELADO'].includes(v.operationStatus || 'ACTIVO');
   });
 }
 function bizTuesday() {
@@ -69,7 +72,7 @@ function bizLateRows() {
     const missing = st.historicalApplied ? 0 : Math.max(0, Number(ev.amount || 0) - Number(st.received || 0));
     const weeksLate = Math.max(1, Math.ceil((cutoff - parseDate(ev.date)) / 604800000));
     return Object.assign({}, ev, st, {missing:missing,weeksLate:weeksLate,key:paymentKey(ev.vehicleId,ev.date)});
-  }).filter(function(r){ return r.missing > .01; });
+  }).filter(function(r){ return r.missing > .5; });
 }
 function bizTuesdaysInMonth(y,m) {
   return tuesdaysInMonth(y,m);
@@ -83,7 +86,7 @@ function bizExpenseNeed(e, rows, tuesday) {
   return Number(e.amount||0);
 }
 function bizCurrentExpenses(rows,tuesday) {
-  return businessExpenseConfig.filter(function(e){ return dateInRange(isoDate(tuesday),e.from,e.to); }).map(function(e){
+  return managedExpenseConfigV5().filter(function(e){ return dateInRange(isoDate(tuesday),e.from,e.to); }).map(function(e){
     return Object.assign({},e,{need:bizExpenseNeed(e,rows,tuesday),assigned:0});
   });
 }
@@ -98,20 +101,22 @@ function bizAllocate(rows,available,debtRecovery) {
   return rows;
 }
 function bizStatusHtml(r) {
+  if(r.historicalApplied) return '<span class="statuspill ok">Aplicado en plan</span>';
   const pending=Math.max(0,Number(r.amount||0)-Number(r.received||0));
-  if (pending<=.01) return '<span class="statuspill ok">Pagado</span>';
+  if (pending<=.5) return '<span class="statuspill ok">Pagado</span>';
   if (Number(r.received||0)>0) return '<span class="statuspill partial">Parcial</span>';
   return '<span class="statuspill pending">Pendiente</span>';
 }
 function openBusinessPaymentV4(encodedKey) {
   const key=decodeURIComponent(encodedKey), row=bizRowsForTuesday(bizTuesday()).concat(bizLateRows()).find(function(r){return r.key===key;});
   if(!row) return alert('No encontré esa cuota.');
+  if(row.historicalApplied)return alert('Esta cuota ya figura aplicada en el plan externo.');
   selectedPaymentV3=row;
   const pending=Math.max(0,Number(row.amount||0)-Number(row.received||0));
-  $('savePaymentButton').disabled=pending<=.01;
+  $('savePaymentButton').disabled=pending<=.5;
   $('paymentModalTitle').textContent=row.vehicle;
-  $('paymentModalInfo').innerHTML='<b>Cuota:</b> '+money(row.amount)+' · <b>Recibido:</b> '+money(row.received)+' · <b>Pendiente:</b> '+money(pending)+'<br><span class="miniNote">Semana '+fmtShort(row.date)+' · Negocio</span>';
-  $('paymentAmount').value=Math.round(pending);
+  $('paymentModalInfo').innerHTML='<b>Cuota:</b> '+money(row.amount)+' · <b>Recibido:</b> '+money(row.received)+' · <b>Pendiente:</b> '+money(pending<=.5?0:pending)+'<br><span class="miniNote">Semana '+fmtShort(row.date)+' · '+managedLabelV5()+'</span>';
+  $('paymentAmount').value=pending>.5?Math.ceil(pending):0;
   $('paymentNote').value='';
   $('paymentHistory').innerHTML=paymentHistoryHtmlV3(row.key);
   $('paymentModal').classList.add('show');
@@ -121,19 +126,19 @@ function renderBusinessWeek() {
   const d=bizTuesday(), rows=bizRowsForTuesday(d), expected=rows.reduce(function(s,r){return s+Number(r.amount||0);},0);
   const cash=bizCashForWeek(d), received=cash.total, lateRows=bizLateRows();
   const late=lateRows.reduce(function(s,r){return s+Number(r.missing||0);},0);
-  const pending=rows.reduce(function(s,r){return s+Math.max(0,Number(r.amount||0)-Number(r.received||0));},0)+late;
+  const pending=rows.reduce(function(s,r){return s+(r.historicalApplied?0:Math.max(0,Number(r.amount||0)-Number(r.received||0)));},0)+late;
   $('bizWeekLabel').textContent='Semana de cobro · martes '+new Intl.DateTimeFormat('es-CR',{day:'2-digit',month:'long',year:'numeric',timeZone:'UTC'}).format(d);
   $('bizExpected').textContent=money(expected);
   $('bizReceived').textContent=money(received);
   $('bizLate').textContent=money(late);
   $('bizPending').textContent=money(pending);
   $('bizIncomeBody').innerHTML=rows.length?rows.map(function(r){
-    const miss=Math.max(0,Number(r.amount||0)-Number(r.received||0));
-    return '<tr><td>'+bizStatusHtml(r)+'</td><td>'+escapeHtmlV3(r.vehicle)+'</td><td>'+fmtShort(r.date)+'</td><td>'+money(r.amount)+'</td><td>'+money(r.received)+'</td><td><b>'+money(miss)+'</b></td><td>'+fmtShort(r.realDate)+'</td><td><button class="dark miniBtn" onclick="openBusinessPaymentV4(\''+encodeURIComponent(r.key)+'\')">'+(miss<=.01?'Ver pagos':'Abonar')+'</button></td></tr>';
+    const miss=r.historicalApplied?0:Math.max(0,Number(r.amount||0)-Number(r.received||0));
+    return '<tr><td>'+bizStatusHtml(r)+'</td><td>'+escapeHtmlV3(r.vehicle)+'</td><td>'+fmtShort(r.date)+'</td><td>'+money(r.amount)+'</td><td>'+money(r.received)+'</td><td><b>'+money(miss)+'</b></td><td>'+fmtShort(r.realDate)+'</td><td><button class="dark miniBtn" onclick="openBusinessPaymentV4(\''+encodeURIComponent(r.key)+'\')">'+(r.historicalApplied?'Aplicado en plan':miss<=.5?'Ver pagos':'Abonar')+'</button></td></tr>';
   }).join(''):'<tr><td colspan="8">No hay pagos programados para esta semana.</td></tr>';
   $('bizLateList').innerHTML=lateRows.length?lateRows.map(function(r){
     return '<div class="lateItem"><div><b>'+escapeHtmlV3(r.vehicle)+' · pendiente '+money(r.missing)+'</b><div class="lateMeta">Debía pagar '+fmtShort(r.date)+' · '+r.weeksLate+' semana'+(r.weeksLate===1?'':'s')+' de atraso</div></div><button class="dark" onclick="openBusinessPaymentV4(\''+encodeURIComponent(r.key)+'\')">Abonar</button></div>';
-  }).join(''):'<div class="placeholder">No hay ingresos atrasados de Negocio.</div>';
+  }).join(''):'<div class="placeholder">No hay ingresos atrasados de '+managedLabelV5()+'.</div>';
   const allocated=bizAllocate(bizCurrentExpenses(rows,d),cash.operational,cash.debtRecovery);
   const used=allocated.reduce(function(s,e){return s+Number(e.assigned||0);},0);
   const gap=allocated.filter(function(e){return e.type!=='remainder';}).reduce(function(s,e){return s+Math.max(0,e.need-e.assigned);},0);
@@ -154,7 +159,7 @@ function rawBizPeriod(type,periodicity) {
 }
 function renderBusinessExpenseConfig() {
   if(!$('bizExpenseConfigBody')) return;
-  const rows=businessExpenseConfig.slice().sort(function(a,b){return priorityRank(a.priority)-priorityRank(b.priority)||Number(a.order||99)-Number(b.order||99);});
+  const rows=managedExpenseConfigV5().slice().sort(function(a,b){return priorityRank(a.priority)-priorityRank(b.priority)||Number(a.order||99)-Number(b.order||99);});
   $('bizExpenseConfigBody').innerHTML=rows.map(function(e){
     const p=rawBizPeriod(e.type,e.periodicity),disabled=(p==='AUTOMATICO'||p==='REMANENTE')?' disabled':'';
     return '<tr data-biz-expense="'+escapeAttrV3(e.id)+'"><td><input data-b="order" type="number" min="1" value="'+Number(e.order||1)+'" style="width:70px"></td><td><input data-b="name" value="'+escapeAttrV3(e.name)+'"></td><td><select data-b="period"><option value="SEMANAL" '+(p==='SEMANAL'?'selected':'')+'>Semanal</option><option value="MENSUAL" '+(p==='MENSUAL'?'selected':'')+'>Mensual</option><option value="AUTOMATICO" '+(p==='AUTOMATICO'?'selected':'')+'>Automático</option><option value="REMANENTE" '+(p==='REMANENTE'?'selected':'')+'>Remanente</option></select></td><td><input data-b="amount" type="number" min="0" step="500" value="'+Number(e.amount||0)+'"'+disabled+'></td><td><select data-b="priority"><option value="CRITICA" '+(e.priority==='critical'?'selected':'')+'>Crítica</option><option value="MEDIA" '+(e.priority==='medium'?'selected':'')+'>Media</option><option value="BAJA" '+(e.priority==='low'?'selected':'')+'>Baja</option></select></td><td><div class="rowActions"><button class="dark miniBtn" onclick="saveBusinessExpenseV4(\''+escapeAttrV3(e.id)+'\')">Guardar</button>'+(e.type==='automatic'||e.type==='remainder'?'':'<button class="light miniBtn" onclick="deleteBusinessExpenseV4(\''+escapeAttrV3(e.id)+'\')">Quitar</button>')+'</div></td></tr>';
@@ -167,7 +172,7 @@ async function saveBusinessExpenseV4(id) {
   const row=document.querySelector('[data-biz-expense="'+CSS.escape(id)+'"]'); if(!row)return;
   const get=function(k){return row.querySelector('[data-b="'+k+'"]');},period=get('period').value;
   const tipo=period==='AUTOMATICO'?'AUTOMATICO_PLAN':period==='REMANENTE'?'REMANENTE':'SEMANAL';
-  const payload={sessionToken:sessionStorage.getItem(SESSION_KEY),accountId:id,nombre:get('name').value.trim(),tipo:tipo,monto:Number(get('amount').value||0),prioridad:get('priority').value,orden:Number(get('order').value||1),vigenteDesde:(businessExpenseConfig.find(function(e){return e.id===id;})||{}).from||'',vigenteHasta:(businessExpenseConfig.find(function(e){return e.id===id;})||{}).to||'',entidad:'NEGOCIO',periodicidad:period};
+  const payload={sessionToken:sessionStorage.getItem(SESSION_KEY),accountId:id,nombre:get('name').value.trim(),tipo:tipo,monto:Number(get('amount').value||0),prioridad:get('priority').value,orden:Number(get('order').value||1),vigenteDesde:(managedExpenseConfigV5().find(function(e){return e.id===id;})||{}).from||'',vigenteHasta:(managedExpenseConfigV5().find(function(e){return e.id===id;})||{}).to||'',entidad:activeManagedEntityV5,periodicidad:period};
   try{const r=await backend('updateAccount',payload);if(!r.ok)throw new Error(r.message||'No se pudo guardar');await loadProductionData();renderAll();renderBusinessAll();}
   catch(e){alert(e.message||'Error guardando gasto de Negocio');}
 }
@@ -176,15 +181,15 @@ async function createBusinessExpenseV4() {
   if(!name)return alert('Ingresá un nombre.');
   const tipo=period==='AUTOMATICO'?'AUTOMATICO_PLAN':period==='REMANENTE'?'REMANENTE':'SEMANAL';
   try{
-    const r=await backend('createAccount',{sessionToken:sessionStorage.getItem(SESSION_KEY),nombre:name,tipo:tipo,monto:Number($('bizNewAmount').value||0),prioridad:$('bizNewPriority').value,orden:Number($('bizNewOrder').value||99),vigenteDesde:isoDate(crTodayUTC()),vigenteHasta:'',entidad:'NEGOCIO',periodicidad:period});
+    const r=await backend('createAccount',{sessionToken:sessionStorage.getItem(SESSION_KEY),nombre:name,tipo:tipo,monto:Number($('bizNewAmount').value||0),prioridad:$('bizNewPriority').value,orden:Number($('bizNewOrder').value||99),vigenteDesde:isoDate(crTodayUTC()),vigenteHasta:'',entidad:activeManagedEntityV5,periodicidad:period});
     if(!r.ok)throw new Error(r.message||'No se pudo crear');
     $('bizNewName').value='';$('bizNewAmount').value='0';
     await loadProductionData();renderAll();renderBusinessAll();
   }catch(e){alert(e.message||'Error creando gasto de Negocio');}
 }
 async function deleteBusinessExpenseV4(id) {
-  const e=businessExpenseConfig.find(function(x){return x.id===id;}); if(!e)return;
-  if(!confirm('¿Quitar '+e.name+' de los gastos de Negocio? El historial no se elimina.'))return;
+  const e=managedExpenseConfigV5().find(function(x){return x.id===id;}); if(!e)return;
+  if(!confirm('¿Quitar '+e.name+' de los gastos de '+managedLabelV5()+'? El historial no se elimina.'))return;
   try{const r=await backend('deleteAccount',{sessionToken:sessionStorage.getItem(SESSION_KEY),accountId:id});if(!r.ok)throw new Error(r.message||'No se pudo quitar');await loadProductionData();renderAll();renderBusinessAll();}
   catch(err){alert(err.message||'Error quitando gasto');}
 }
@@ -193,7 +198,7 @@ function bizProjectMonth(y,m,extraCars,extraWeekly) {
   const income=events.reduce(function(s,e){return s+Number(e.amount||0);},0);
   const iva=events.reduce(function(s,e){return s+Number(e.iva||((e.amount||0)*IVA_RATE));},0);
   let fixed=0;
-  businessExpenseConfig.forEach(function(e){
+  managedExpenseConfigV5().forEach(function(e){
     if(e.type==='remainder'||e.type==='automatic')return;
     const mid=isoDate(new Date(Date.UTC(y,m,15))); if(!dateInRange(mid,e.from,e.to))return;
     fixed+=e.periodicity==='MENSUAL'?Number(e.amount||0):Number(e.amount||0)*tuesdays.length;
@@ -217,7 +222,7 @@ function renderBusinessProjection() {
   const max=Math.max(1,...vals.map(function(x){return Math.abs(x[1].scenarioNet);}));
   $('bizProjectionBars').innerHTML=vals.map(function(x){return '<div class="barRow"><div>'+x[0]+'</div><div class="barTrack"><div class="barFill" style="width:'+Math.max(2,Math.abs(x[1].scenarioNet)/max*100)+'%"></div></div><div>'+money(x[1].scenarioNet)+'</div></div>';}).join('');
   const impacts=[1,2,3].map(function(n){return vals.reduce(function(s,x){const p=x[0].split('-').map(Number);return s+bizProjectMonth(p[0],p[1]-1,n,extraWeekly).extraNet;},0);});
-  $('bizScenarioSummary').innerHTML='<div class="note"><b>Neto base:</b> '+money(net)+'<br><br><b>+1 carro:</b> '+money(net+impacts[0])+'<br><b>+2 carros:</b> '+money(net+impacts[1])+'<br><b>+3 carros:</b> '+money(net+impacts[2])+'<br><br><span style="color:#667085">Solo utiliza vehículos y gastos de Negocio.</span></div>';
+  $('bizScenarioSummary').innerHTML='<div class="note"><b>Neto base:</b> '+money(net)+'<br><br><b>+1 carro:</b> '+money(net+impacts[0])+'<br><b>+2 carros:</b> '+money(net+impacts[1])+'<br><b>+3 carros:</b> '+money(net+impacts[2])+'<br><br><span style="color:#667085">Solo utiliza vehículos y gastos de '+managedLabelV5()+'.</span></div>';
 }
 function renderBusinessAll() {
   renderBusinessWeek();renderBusinessExpenseConfig();renderBusinessProjection();
@@ -228,15 +233,32 @@ function showBusinessView(id) {
   document.querySelectorAll('.bizNavBtn').forEach(function(b){b.className=(b.dataset.biz===id?'dark':'light')+' bizNavBtn';});
   if(id==='bizSemana')renderBusinessWeek();if(id==='bizGastos')renderBusinessExpenseConfig();if(id==='bizProyecciones')renderBusinessProjection();
 }
+function managedHeadingsV5() {
+  const label=managedLabelV5(),weekTitle=$('bizSemana')?.querySelector('.weekTop h2');
+  if(weekTitle)weekTitle.textContent='Ingresos semanales '+label;
+  const expensesTitle=$('bizGastos')?.querySelector('h2');
+  if(expensesTitle)expensesTitle.textContent='Gastos y prioridades · '+label;
+  const projectionTitle=$('bizProyecciones')?.querySelector('h2');
+  if(projectionTitle)projectionTitle.textContent='Proyecciones · '+label;
+  const allocationTitle=$('bizSemana')?.querySelector('.sectionHead h2');
+  if(allocationTitle)allocationTitle.textContent='Distribución de gastos · '+label;
+  const projectionNote=$('bizProyecciones')?.querySelector('.sectionHead .status');
+  if(projectionNote)projectionNote.textContent='Solo vehículos y gastos asignados a '+label+'.';
+  const incomeNote=$('bizSemana')?.querySelector('.sectionHead .status');
+  if(incomeNote)incomeNote.textContent='Solo se distribuye dinero realmente recibido por '+label+'.';
+}
 function applyScopeV4(scope) {
-  const business=scope==='NEGOCIO',nav=document.querySelector('#appShell > .nav'),bizNav=$('businessNav'),shell=$('businessShell');
+  if(!['PERSONAL','NEGOCIO','CATA'].includes(scope))scope='PERSONAL';
+  const managed=scope!=='PERSONAL',nav=document.querySelector('#appShell > .nav'),bizNav=$('businessNav'),shell=$('businessShell');
+  if(managed)activeManagedEntityV5=scope;
   localStorage.setItem('flotilla_scope',scope);
-  if($('appSubtitle'))$('appSubtitle').textContent=business?'Administración negocio · V4':'Administración personal · V4';
-  if(nav)nav.style.display=business?'none':'flex';
-  if(bizNav)bizNav.style.display=business?'flex':'none';
-  document.querySelectorAll('#appShell .view').forEach(function(v){if(business)v.classList.remove('active');});
-  if(shell)shell.style.display=business?'block':'none';
-  if(business){showBusinessView(activeBusinessView);renderBusinessAll();}
+  if($('scopeSelector'))$('scopeSelector').value=scope;
+  if($('appSubtitle'))$('appSubtitle').textContent=scope==='CATA'?'Administración Cata · V5':scope==='NEGOCIO'?'Administración negocio · V5':'Administración personal · V5';
+  if(nav)nav.style.display=managed?'none':'flex';
+  if(bizNav)bizNav.style.display=managed?'flex':'none';
+  document.querySelectorAll('#appShell .view').forEach(function(v){if(managed)v.classList.remove('active');});
+  if(shell)shell.style.display=managed?'block':'none';
+  if(managed){managedHeadingsV5();showBusinessView(activeBusinessView);renderBusinessAll();}
   else{if(shell)shell.style.display='none';goToView(lastPersonalView||'resumen');}
 }
 function installBusinessUIV4() {
@@ -256,6 +278,10 @@ function installBusinessUIV4() {
   $('bizAddExpense').onclick=createBusinessExpenseV4;
   ['bizProjectionRange','bizExtraCars','bizExtraWeekly'].forEach(function(id){$(id).addEventListener('change',renderBusinessProjection);});
   document.querySelectorAll('.navbtn').forEach(function(b){b.addEventListener('click',function(){lastPersonalView=b.dataset.v||lastPersonalView;});});
+  // El formulario compartido estaba oculto dentro de Semana personal.
+  // Se monta a nivel de app para abrirlo desde Sociedad y Cata sin cambiar de vista.
+  const sharedPaymentModal=$('paymentModal');
+  if(sharedPaymentModal && sharedPaymentModal.parentElement!==$('appShell'))$('appShell').appendChild(sharedPaymentModal);
   const selector=$('scopeSelector');if(selector){selector.value=localStorage.getItem('flotilla_scope')||'PERSONAL';selector.onchange=function(){applyScopeV4(selector.value);};}
   applyScopeV4(selector?selector.value:'PERSONAL');
 }
